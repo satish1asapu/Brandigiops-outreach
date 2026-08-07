@@ -10,7 +10,7 @@ async function bootstrap() {
   // enables the @IsString(), @IsEnum() etc. decorators used in the DTOs
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
-  const port = process.env.PORT || 3000;
+  const port = process.env.PORT || 3005;
   await app.listen(port);
   console.log(`Outreach app running on http://localhost:${port}`);
 }

@@ -8,35 +8,39 @@ export type TargetDocument = Target & Document;
 
 @Schema({ timestamps: true })
 export class Target {
-  // which agency client this target belongs to (e.g. Saaphalya, Sparrl)
+  // Agency client this outreach belongs to (e.g. Sparrl Mongo ObjectId)
   @Prop({ type: Types.ObjectId, ref: 'Client', required: true, index: true })
   clientId: Types.ObjectId;
 
-  // platform this target is relevant for
+  // Platform for this outreach (gmb | linkedin | ...)
   @Prop({ type: String, enum: Platform, required: true })
   platform: Platform;
 
-  // the client's own handle/page on that platform (e.g. @saaphalyaGBP)
+  // Destination URL opened after /r/:token click.
+  // GMB: review URL
+  // LinkedIn / Facebook / Instagram: profile or page URL to Follow/Like
+  // (no auto-Follow deep link — user clicks Follow/Like manually)
   @Prop({ required: true })
   platformHandle: string;
 
-  // human-readable name of the target, optional but useful for WhatsApp templates
+  // Display name of the person who receives the WhatsApp / engage link
   @Prop()
   name?: string;
 
-  // primary identifier for the target - email, LinkedIn profile URL, or role tag
+  // Who receives the message (email, role tag, or LinkedIn identifier) —
+  // NOT the page to follow. Example: "Procurement-Manager-Linkedin-abb.com"
   @Prop({ required: true })
   targetId: string;
 
-  // WhatsApp number to deliver the outreach link to
+  // WhatsApp number that receives the engage link
   @Prop({ required: true })
   targetWhatsappNo: string;
 
-  // self = target is the decision maker, gatekeeper = assistant/intermediary
+  // self = decision maker; gatekeeper = assistant/intermediary
   @Prop({ type: String, enum: TargetType, default: TargetType.SELF })
   targetType: TargetType;
 
-  // free-form notes, e.g. "Procurement Manager at abb.com"
+  // Free-form notes, e.g. "Procurement Manager at abb.com"
   @Prop()
   notes?: string;
 }

@@ -10,6 +10,7 @@ export class CreateTargetDto {
   @IsEnum(Platform)
   platform: Platform;
 
+  // Destination opened on click (GMB review URL, or LI/FB/IG profile/page to Follow)
   @IsString()
   @IsNotEmpty()
   platformHandle: string;
@@ -18,9 +19,10 @@ export class CreateTargetDto {
   @IsString()
   name?: string;
 
+  // Who receives the message (email / role tag) — not the Follow destination
   @IsString()
   @IsNotEmpty()
-  targetId: string; // email, LinkedIn URL, or role tag
+  targetId: string;
 
   @IsString()
   @IsNotEmpty()

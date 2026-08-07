@@ -1,6 +1,7 @@
 // outreach.service.ts
 
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { randomUUID } from 'crypto';
@@ -12,14 +13,20 @@ import { GenerateLinkDto } from './dto/generate-link.dto';
 import { Platform, ReachOutType, LinkStatus } from './outreach.enums';
 
 const LINK_EXPIRY_DAYS = 30;
-const BASE_REDIRECT_URL = 'https://brandigiops.com/r'; // public short-link host
 
 @Injectable()
 export class OutreachService {
+  private readonly baseRedirectUrl: string;
+
   constructor(
     @InjectModel(Target.name) private targetModel: Model<TargetDocument>,
     @InjectModel(OutreachLink.name) private linkModel: Model<OutreachLinkDocument>,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    // Local: http://localhost:3005/r  | Prod: https://your-domain.com/r
+    this.baseRedirectUrl =
+      this.configService.get<string>('PUBLIC_REDIRECT_BASE_URL') || 'http://localhost:3005/r';
+  }
 
   // ---------- Step 1: store target details ----------
   async createTarget(dto: CreateTargetDto): Promise<TargetDocument> {
@@ -58,29 +65,40 @@ export class OutreachService {
       expiresAt,
     });
 
-    return { engageLink: `${BASE_REDIRECT_URL}/${linkToken}` };
+    return { engageLink: `${this.baseRedirectUrl}/${linkToken}` };
   }
 
   // ---------- Step 3: resolve where the token should redirect to ----------
-  // NOTE: For GMB, target.platformHandle is expected to already hold the
-  // pre-configured Google short review link (e.g. https://g.page/r/<id>/review),
-  // generated once per client from the GBP dashboard and saved against the target/client.
-  // For LinkedIn, platformHandle is simply the company page URL - LinkedIn does not
-  // support a deep-link that pre-fills the Follow action, so this only opens the page.
+  // platformHandle is always the destination URL:
+  // - GMB: review form URL
+  // - LinkedIn / Facebook / Instagram: profile or page URL (user Follow/Like manually)
   private resolveDestination(platform: Platform, reachOutType: ReachOutType, platformHandle: string): string {
     switch (reachOutType) {
       case ReachOutType.GMB_REVIEW_POST:
         if (platform !== Platform.GMB) {
           throw new BadRequestException('gmb-review-post is only valid for gmb platform');
         }
-        return platformHandle; // already the g.page/r/.../review link
+        return platformHandle;
 
       case ReachOutType.LINKEDIN_FOLLOW:
       case ReachOutType.LINKEDIN_CONNECT:
         if (platform !== Platform.LINKEDIN) {
           throw new BadRequestException(`${reachOutType} is only valid for linkedin platform`);
         }
-        return platformHandle; // company page or profile URL, manual click required
+        return platformHandle;
+
+      case ReachOutType.FACEBOOK_FOLLOW:
+      case ReachOutType.FACEBOOK_LIKE_PAGE:
+        if (platform !== Platform.FACEBOOK) {
+          throw new BadRequestException(`${reachOutType} is only valid for facebook platform`);
+        }
+        return platformHandle;
+
+      case ReachOutType.INSTAGRAM_FOLLOW:
+        if (platform !== Platform.INSTAGRAM) {
+          throw new BadRequestException('instagram-follow is only valid for instagram platform');
+        }
+        return platformHandle;
 
       default:
         throw new BadRequestException(`Unsupported reachOutType: ${reachOutType}`);
@@ -88,14 +106,16 @@ export class OutreachService {
   }
 
   private assertReachOutTypeMatchesPlatform(platform: Platform, reachOutType: ReachOutType) {
-    const gmbTypes = [ReachOutType.GMB_REVIEW_POST];
-    const linkedinTypes = [ReachOutType.LINKEDIN_FOLLOW, ReachOutType.LINKEDIN_CONNECT];
+    const allowedByPlatform: Record<Platform, ReachOutType[]> = {
+      [Platform.GMB]: [ReachOutType.GMB_REVIEW_POST],
+      [Platform.LINKEDIN]: [ReachOutType.LINKEDIN_FOLLOW, ReachOutType.LINKEDIN_CONNECT],
+      [Platform.FACEBOOK]: [ReachOutType.FACEBOOK_FOLLOW, ReachOutType.FACEBOOK_LIKE_PAGE],
+      [Platform.INSTAGRAM]: [ReachOutType.INSTAGRAM_FOLLOW],
+    };
 
-    if (platform === Platform.GMB && !gmbTypes.includes(reachOutType)) {
-      throw new BadRequestException(`reachOutType ${reachOutType} not valid for gmb`);
-    }
-    if (platform === Platform.LINKEDIN && !linkedinTypes.includes(reachOutType)) {
-      throw new BadRequestException(`reachOutType ${reachOutType} not valid for linkedin`);
+    const allowed = allowedByPlatform[platform] || [];
+    if (!allowed.includes(reachOutType)) {
+      throw new BadRequestException(`reachOutType ${reachOutType} not valid for ${platform}`);
     }
   }
 

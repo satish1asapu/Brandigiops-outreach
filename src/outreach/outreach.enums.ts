@@ -10,8 +10,10 @@ export enum Platform {
 export enum ReachOutType {
   GMB_REVIEW_POST = 'gmb-review-post',
   LINKEDIN_FOLLOW = 'linkedin-follow',
-  LINKEDIN_CONNECT = 'linkedin-connect', // extendable for future
-  FACEBOOK_LIKE_PAGE = 'facebook-like-page',
+  LINKEDIN_CONNECT = 'linkedin-connect',
+  FACEBOOK_FOLLOW = 'facebook-follow',
+  FACEBOOK_LIKE_PAGE = 'facebook-like-page', // same redirect behavior as facebook-follow
+  INSTAGRAM_FOLLOW = 'instagram-follow',
 }
 
 export enum LinkStatus {
