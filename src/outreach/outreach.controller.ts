@@ -4,10 +4,18 @@ import { Body, Controller, Get, Param, Post, Redirect } from '@nestjs/common';
 import { OutreachService } from './outreach.service';
 import { CreateTargetDto } from './dto/create-target.dto';
 import { GenerateLinkDto } from './dto/generate-link.dto';
+import { AutoGenerateGmbDto } from './dto/auto-generate-gmb.dto';
 
 @Controller()
 export class OutreachController {
   constructor(private readonly outreachService: OutreachService) {}
+
+  // Auto: one call with clientId → load clientonboardings → build GMB engage link
+  // POST /outreach/gmb/auto-generate
+  @Post('outreach/gmb/auto-generate')
+  async autoGenerateGmb(@Body() dto: AutoGenerateGmbDto) {
+    return this.outreachService.autoGenerateGmbLink(dto);
+  }
 
   // Step 1: store target details BEFORE generating any link
   // POST /outreach/targets

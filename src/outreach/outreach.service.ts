@@ -8,9 +8,16 @@ import { randomUUID } from 'crypto';
 
 import { Target, TargetDocument } from './schemas/target.schema';
 import { OutreachLink, OutreachLinkDocument } from './schemas/outreach-link.schema';
+import {
+  ClientOnboarding,
+  ClientOnboardingDocument,
+  GoogleMyBusinessEntry,
+} from './schemas/client-onboarding.schema';
 import { CreateTargetDto } from './dto/create-target.dto';
 import { GenerateLinkDto } from './dto/generate-link.dto';
-import { Platform, ReachOutType, LinkStatus } from './outreach.enums';
+import { AutoGenerateGmbDto } from './dto/auto-generate-gmb.dto';
+import { Platform, ReachOutType, LinkStatus, TargetType } from './outreach.enums';
+import { WhatsAppService } from './whatsapp.service';
 
 const LINK_EXPIRY_DAYS = 30;
 
@@ -21,7 +28,10 @@ export class OutreachService {
   constructor(
     @InjectModel(Target.name) private targetModel: Model<TargetDocument>,
     @InjectModel(OutreachLink.name) private linkModel: Model<OutreachLinkDocument>,
+    @InjectModel(ClientOnboarding.name)
+    private clientOnboardingModel: Model<ClientOnboardingDocument>,
     private readonly configService: ConfigService,
+    private readonly whatsAppService: WhatsAppService,
   ) {
     // Local: http://localhost:3005/r  | Prod: https://your-domain.com/r
     this.baseRedirectUrl =
@@ -149,5 +159,126 @@ export class OutreachService {
     link.status = LinkStatus.COMPLETED;
     link.completedAt = new Date();
     return link.save();
+  }
+
+  // ---------- Auto: clientId → clientonboardings → placeId + phone → engage link ----------
+  async autoGenerateGmbLink(dto: AutoGenerateGmbDto) {
+    const client = await this.clientOnboardingModel.findById(dto.clientId).exec();
+    if (!client) {
+      throw new NotFoundException(`Client onboarding not found for id ${dto.clientId}`);
+    }
+
+    const businessInfo = client.businessInfo || ({} as any);
+    const phoneNumber = (businessInfo.phoneNumber || '').trim();
+    if (!phoneNumber) {
+      throw new BadRequestException(
+        'businessInfo.phoneNumber is missing on client onboarding (WhatsApp number is not used)',
+      );
+    }
+
+    const placeId = this.resolvePlaceId(client.googleMyBusiness || [], dto.placeId);
+    const reviewUrl = `https://search.google.com/local/writereview?placeid=${placeId}`;
+
+    const target = await this.targetModel.create({
+      clientId: client._id,
+      platform: Platform.GMB,
+      platformHandle: reviewUrl,
+      name: businessInfo.ownerName || businessInfo.name,
+      targetId: businessInfo.email || phoneNumber,
+      // Schema field name is historical; we intentionally store phoneNumber here
+      targetWhatsappNo: phoneNumber,
+      targetType: TargetType.SELF,
+      notes: `Auto GMB link for ${businessInfo.name || client._id} (placeId=${placeId})`,
+    });
+
+    const { engageLink } = await this.generateLink({
+      targetId: String(target._id),
+      reachOutType: ReachOutType.GMB_REVIEW_POST,
+    });
+
+    const recipientName =
+      businessInfo.ownerName || businessInfo.name || 'there';
+    const shouldSendWhatsApp = dto.sendWhatsApp !== false;
+
+    let whatsapp: {
+      sent: boolean;
+      delivered?: boolean;
+      phone?: string;
+      templateName?: string;
+      metaErrorCode?: number;
+      metaErrorMessage?: string;
+      result?: unknown;
+      error?: unknown;
+      warning?: string;
+    } = { sent: false };
+
+    if (shouldSendWhatsApp) {
+      try {
+        const sendResult = await this.whatsAppService.sendBusinessReviewLink({
+          toPhone: phoneNumber,
+          recipientName,
+          engageLink,
+        });
+        whatsapp = {
+          sent: true,
+          delivered: sendResult.delivered,
+          phone: sendResult.phone,
+          templateName: sendResult.templateName,
+          metaErrorCode: sendResult.metaErrorCode,
+          metaErrorMessage: sendResult.metaErrorMessage,
+          result: sendResult.result,
+        };
+        if (!sendResult.delivered && sendResult.metaErrorCode === 131049) {
+          whatsapp.warning =
+            'Meta blocked this Marketing template (131049). This number already received marketing WhatsApps today (e.g. WatchDog). Try a fresh number, wait until tomorrow, or have the person reply first.';
+        } else if (/localhost|127\.0\.0\.1/i.test(engageLink)) {
+          whatsapp.warning =
+            'engageLink uses localhost — recipient phone cannot open it. Set PUBLIC_REDIRECT_BASE_URL to a public HTTPS domain for real clients.';
+        }
+      } catch (error: any) {
+        whatsapp = {
+          sent: false,
+          delivered: false,
+          error: error?.response || error?.message || String(error),
+        };
+      }
+    }
+
+    return {
+      engageLink,
+      clientId: String(client._id),
+      businessName: businessInfo.name,
+      ownerName: businessInfo.ownerName,
+      phoneNumber,
+      placeId,
+      reviewUrl,
+      targetId: String(target._id),
+      whatsapp,
+    };
+  }
+
+  private resolvePlaceId(
+    gmbEntries: GoogleMyBusinessEntry[],
+    preferredPlaceId?: string,
+  ): string {
+    if (preferredPlaceId) {
+      const match = gmbEntries.find((e) => e.placeId === preferredPlaceId);
+      if (!match?.placeId) {
+        throw new BadRequestException(
+          `placeId ${preferredPlaceId} not found on this client's googleMyBusiness`,
+        );
+      }
+      return match.placeId;
+    }
+
+    const withPlaceId = gmbEntries.filter((e) => !!e.placeId);
+    if (!withPlaceId.length) {
+      throw new BadRequestException(
+        'No googleMyBusiness.placeId found on client onboarding',
+      );
+    }
+
+    const active = withPlaceId.find((e) => e.isActive !== false);
+    return (active || withPlaceId[0]).placeId as string;
   }
 }

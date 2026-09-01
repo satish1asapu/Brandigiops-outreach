@@ -32,7 +32,8 @@ export class Target {
   @Prop({ required: true })
   targetId: string;
 
-  // WhatsApp number that receives the engage link
+  // Contact phone for outreach delivery.
+  // Auto GMB flow stores businessInfo.phoneNumber here (not WhatsApp).
   @Prop({ required: true })
   targetWhatsappNo: string;
 
