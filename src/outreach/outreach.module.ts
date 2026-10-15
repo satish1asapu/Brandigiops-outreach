@@ -9,9 +9,12 @@ import {
   ClientOnboarding,
   ClientOnboardingSchema,
 } from './schemas/client-onboarding.schema';
+import { ClientCustomer, ClientCustomerSchema } from './schemas/client-customer.schema';
 import { OutreachService } from './outreach.service';
 import { OutreachController } from './outreach.controller';
 import { WhatsAppService } from './whatsapp.service';
+import { ReviewFollowUpService } from './review-followup.service';
+import { SerpApiReviewDetector, REVIEW_DETECTOR } from './review-detector';
 
 @Module({
   imports: [
@@ -19,10 +22,16 @@ import { WhatsAppService } from './whatsapp.service';
       { name: Target.name, schema: TargetSchema },
       { name: OutreachLink.name, schema: OutreachLinkSchema },
       { name: ClientOnboarding.name, schema: ClientOnboardingSchema },
+      { name: ClientCustomer.name, schema: ClientCustomerSchema },
     ]),
   ],
   controllers: [OutreachController],
-  providers: [OutreachService, WhatsAppService],
+  providers: [
+    OutreachService,
+    WhatsAppService,
+    ReviewFollowUpService,
+    { provide: REVIEW_DETECTOR, useClass: SerpApiReviewDetector },
+  ],
   exports: [OutreachService],
 })
 export class OutreachModule {}

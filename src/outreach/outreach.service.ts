@@ -16,10 +16,23 @@ import {
 import { CreateTargetDto } from './dto/create-target.dto';
 import { GenerateLinkDto } from './dto/generate-link.dto';
 import { AutoGenerateGmbDto } from './dto/auto-generate-gmb.dto';
-import { Platform, ReachOutType, LinkStatus, TargetType } from './outreach.enums';
+import { ClientCustomerEntryDto } from './dto/client-customer.dto';
+import { SendClientCustomerReviewDto } from './dto/send-client-customer-review.dto';
+import { SendClientCustomersReviewDto } from './dto/send-client-customers-review.dto';
+import { ClientCustomer, ClientCustomerDocument } from './schemas/client-customer.schema';
+import {
+  Platform,
+  ReachOutType,
+  LinkStatus,
+  TargetType,
+  FollowUpStatus,
+  MessageKind,
+} from './outreach.enums';
 import { WhatsAppService } from './whatsapp.service';
+import { buildMessageLog } from './message-log';
 
 const LINK_EXPIRY_DAYS = 30;
+const DEFAULT_REMINDER_HOURS = 48;
 
 @Injectable()
 export class OutreachService {
@@ -30,6 +43,8 @@ export class OutreachService {
     @InjectModel(OutreachLink.name) private linkModel: Model<OutreachLinkDocument>,
     @InjectModel(ClientOnboarding.name)
     private clientOnboardingModel: Model<ClientOnboardingDocument>,
+    @InjectModel(ClientCustomer.name)
+    private clientCustomerModel: Model<ClientCustomerDocument>,
     private readonly configService: ConfigService,
     private readonly whatsAppService: WhatsAppService,
   ) {
@@ -51,8 +66,289 @@ export class OutreachService {
     return this.targetModel.find({ clientId: new Types.ObjectId(clientId) }).exec();
   }
 
+  // ---------- Client's end customers (name + phone for review outreach) ----------
+  async upsertClientCustomers(
+    clientId: string,
+    customers: ClientCustomerEntryDto[],
+  ): Promise<{ saved: number; customers: ClientCustomerDocument[] }> {
+    await this.assertClientOnboardingExists(clientId);
+    const clientObjectId = new Types.ObjectId(clientId);
+    const saved: ClientCustomerDocument[] = [];
+
+    for (const row of customers) {
+      const name = row.name.trim();
+      const phoneNumber = row.phoneNumber.trim();
+      const phoneNormalized = this.normalizePhoneForStorage(phoneNumber);
+      if (!phoneNormalized) {
+        throw new BadRequestException(`Invalid phoneNumber for "${name}"`);
+      }
+
+      const doc = await this.clientCustomerModel
+        .findOneAndUpdate(
+          { clientId: clientObjectId, phoneNormalized },
+          { $set: { name, phoneNumber, phoneNormalized, clientId: clientObjectId } },
+          { upsert: true, new: true, runValidators: true },
+        )
+        .exec();
+      saved.push(doc);
+    }
+
+    return { saved: saved.length, customers: saved };
+  }
+
+  /** Replace the full customer list for a client (removes numbers not in the payload). */
+  async replaceClientCustomers(
+    clientId: string,
+    customers: ClientCustomerEntryDto[],
+  ): Promise<{ saved: number; customers: ClientCustomerDocument[] }> {
+    await this.assertClientOnboardingExists(clientId);
+    const clientObjectId = new Types.ObjectId(clientId);
+    const keepNormalized = new Set<string>();
+
+    for (const row of customers) {
+      const phoneNormalized = this.normalizePhoneForStorage(row.phoneNumber);
+      if (!phoneNormalized) {
+        throw new BadRequestException(`Invalid phoneNumber for "${row.name.trim()}"`);
+      }
+      keepNormalized.add(phoneNormalized);
+    }
+
+    await this.clientCustomerModel
+      .deleteMany({
+        clientId: clientObjectId,
+        phoneNormalized: { $nin: [...keepNormalized] },
+      })
+      .exec();
+
+    return this.upsertClientCustomers(clientId, customers);
+  }
+
+  async listClientCustomers(clientId: string): Promise<ClientCustomerDocument[]> {
+    await this.assertClientOnboardingExists(clientId);
+    return this.clientCustomerModel
+      .find({ clientId: new Types.ObjectId(clientId) })
+      .sort({ name: 1 })
+      .exec();
+  }
+
+  /** One end-customer by phone (must exist in clientcustomers for this client). */
+  async sendReviewRequestToClientCustomer(
+    clientId: string,
+    phoneNumber: string,
+    dto: SendClientCustomerReviewDto = {},
+  ) {
+    const batch = await this.sendReviewRequestsToClientCustomers(clientId, {
+      phoneNumbers: [phoneNumber],
+      placeId: dto.placeId,
+      sendWhatsApp: dto.sendWhatsApp,
+    });
+    return batch.results[0];
+  }
+
+  /** Selected end-customers by phone only (never sends to the full list). */
+  async sendReviewRequestsToClientCustomers(
+    clientId: string,
+    dto: SendClientCustomersReviewDto,
+  ) {
+    const client = await this.clientOnboardingModel.findById(clientId).exec();
+    if (!client) {
+      throw new NotFoundException(`Client onboarding not found for id ${clientId}`);
+    }
+
+    const businessInfo = client.businessInfo || ({} as any);
+    const businessName = (businessInfo.name || '').trim() || 'our business';
+    const placeId = this.resolvePlaceId(client.googleMyBusiness || [], dto.placeId);
+    const reviewUrl = `https://search.google.com/local/writereview?placeid=${placeId}`;
+
+    const clientObjectId = new Types.ObjectId(clientId);
+    const customers = await this.findClientCustomersByPhones(
+      clientId,
+      dto.phoneNumbers,
+    );
+
+    const shouldSend = dto.sendWhatsApp !== false;
+    const results = [];
+
+    for (const customer of customers) {
+      results.push(
+        await this.sendReviewRequestForStoredCustomer({
+          clientObjectId,
+          customer,
+          businessName,
+          reviewUrl,
+          shouldSend,
+        }),
+      );
+    }
+
+    return {
+      clientId,
+      businessName,
+      placeId,
+      count: results.length,
+      results,
+    };
+  }
+
+  private async sendReviewRequestForStoredCustomer(input: {
+    clientObjectId: Types.ObjectId;
+    customer: ClientCustomerDocument;
+    businessName: string;
+    reviewUrl: string;
+    shouldSend: boolean;
+  }) {
+    const { clientObjectId, customer, businessName, reviewUrl, shouldSend } = input;
+    const customerName = customer.name.trim();
+    const phoneNumber = customer.phoneNumber.trim();
+
+    const target = await this.targetModel.create({
+      clientId: clientObjectId,
+      platform: Platform.GMB,
+      platformHandle: reviewUrl,
+      name: customerName,
+      targetId: `client-customer:${customer._id}`,
+      targetWhatsappNo: phoneNumber,
+      targetType: TargetType.SELF,
+      notes: `End customer review request for ${businessName}`,
+    });
+
+    const { link, engageLink } = await this.createLink({
+      targetId: String(target._id),
+      reachOutType: ReachOutType.GMB_REVIEW_POST,
+    });
+
+    await this.linkModel.updateOne(
+      { _id: link._id },
+      {
+        $set: {
+          recipientName: customerName,
+          recipientPhone: phoneNumber,
+          businessName,
+          followUpEnabled: false,
+          reminderStatus: FollowUpStatus.NONE,
+          thankYouStatus: FollowUpStatus.NONE,
+        },
+      },
+    );
+
+    let whatsapp: {
+      sent: boolean;
+      delivered?: boolean;
+      templateName?: string;
+      metaErrorCode?: number;
+      metaErrorMessage?: string;
+      error?: unknown;
+    } = { sent: false };
+
+    if (shouldSend) {
+      try {
+        const sendResult = await this.whatsAppService.sendCustomerReviewRequest({
+          toPhone: phoneNumber,
+          customerName,
+          businessName,
+          engageLink,
+        });
+        whatsapp = {
+          sent: true,
+          delivered: sendResult.delivered,
+          templateName: sendResult.templateName,
+          metaErrorCode: sendResult.metaErrorCode,
+          metaErrorMessage: sendResult.metaErrorMessage,
+        };
+        await this.linkModel.updateOne(
+          { _id: link._id },
+          {
+            $set: { sentAt: new Date() },
+            $push: {
+              messages: buildMessageLog(MessageKind.CUSTOMER_REVIEW_REQUEST, sendResult),
+            },
+          },
+        );
+      } catch (error: any) {
+        whatsapp = {
+          sent: false,
+          error: error?.response || error?.message || String(error),
+        };
+        await this.linkModel.updateOne(
+          { _id: link._id },
+          {
+            $push: {
+              messages: buildMessageLog(MessageKind.CUSTOMER_REVIEW_REQUEST, undefined, error),
+            },
+          },
+        );
+      }
+    }
+
+    return {
+      customerId: String(customer._id),
+      name: customerName,
+      phoneNumber,
+      engageLink: shouldSend ? engageLink : undefined,
+      linkToken: link.linkToken,
+      whatsapp,
+    };
+  }
+
+  private async assertClientOnboardingExists(clientId: string): Promise<void> {
+    const exists = await this.clientOnboardingModel.exists({ _id: clientId }).exec();
+    if (!exists) {
+      throw new NotFoundException(`Client onboarding not found for id ${clientId}`);
+    }
+  }
+
+  private normalizePhoneForStorage(rawPhone: string): string {
+    const digits = (rawPhone || '').replace(/\D/g, '');
+    if (!digits) return '';
+    return digits.startsWith('91') ? digits : `91${digits}`;
+  }
+
+  private async findClientCustomersByPhones(
+    clientId: string,
+    phoneNumbers: string[],
+  ): Promise<ClientCustomerDocument[]> {
+    const clientObjectId = new Types.ObjectId(clientId);
+    const normalizedList = phoneNumbers.map((raw) => {
+      const phoneNormalized = this.normalizePhoneForStorage(raw);
+      if (!phoneNormalized) {
+        throw new BadRequestException(`Invalid phoneNumber: ${raw}`);
+      }
+      return phoneNormalized;
+    });
+    const unique = [...new Set(normalizedList)];
+
+    const customers = await this.clientCustomerModel
+      .find({
+        clientId: clientObjectId,
+        phoneNormalized: { $in: unique },
+      })
+      .sort({ name: 1 })
+      .exec();
+
+    if (customers.length !== unique.length) {
+      const found = new Set(customers.map((c) => c.phoneNormalized));
+      const missing = unique.filter((p) => !found.has(p));
+      throw new NotFoundException(
+        `No stored end-customer for this client with phone(s): ${missing.join(', ')}. Save the customer first.`,
+      );
+    }
+
+    return customers;
+  }
+
   // ---------- Step 2: generate the outreach link ----------
   async generateLink(dto: GenerateLinkDto): Promise<{ engageLink: string }> {
+    const { engageLink } = await this.createLink(dto);
+    return { engageLink };
+  }
+
+  buildEngageLink(linkToken: string): string {
+    return `${this.baseRedirectUrl}/${linkToken}`;
+  }
+
+  private async createLink(
+    dto: GenerateLinkDto,
+  ): Promise<{ link: OutreachLinkDocument; engageLink: string }> {
     const target = await this.targetModel.findById(dto.targetId).exec();
     if (!target) {
       throw new NotFoundException('Target not found. Store target details first.');
@@ -65,7 +361,7 @@ export class OutreachService {
     const linkToken = randomUUID();
     const expiresAt = new Date(Date.now() + LINK_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
 
-    await this.linkModel.create({
+    const link = await this.linkModel.create({
       clientId: target.clientId,
       targetId: target._id,
       reachOutType: dto.reachOutType,
@@ -75,7 +371,7 @@ export class OutreachService {
       expiresAt,
     });
 
-    return { engageLink: `${this.baseRedirectUrl}/${linkToken}` };
+    return { link, engageLink: this.buildEngageLink(linkToken) };
   }
 
   // ---------- Step 3: resolve where the token should redirect to ----------
@@ -130,7 +426,9 @@ export class OutreachService {
   }
 
   // ---------- Step 4: handle the public redirect when target clicks the link ----------
-  async handleRedirect(linkToken: string): Promise<string> {
+  async handleRedirect(
+    linkToken: string,
+  ): Promise<{ destinationUrl: string; firstClick: boolean }> {
     const link = await this.linkModel.findOne({ linkToken }).exec();
     if (!link) {
       throw new NotFoundException('Invalid or unknown link');
@@ -141,24 +439,63 @@ export class OutreachService {
       throw new BadRequestException('This link has expired');
     }
 
+    let firstClick = false;
     if (link.status === LinkStatus.PENDING) {
+      firstClick = true;
       link.status = LinkStatus.CLICKED;
       link.clickedAt = new Date();
       await link.save();
     }
 
-    return link.destinationUrl;
+    return { destinationUrl: link.destinationUrl, firstClick };
   }
 
-  // ---------- Step 5: mark completed (only where verifiable, e.g. via GMB API webhook) ----------
+  // ---------- Step 5: mark completed (manually, or by the review detection job) ----------
   async markCompleted(linkToken: string): Promise<OutreachLinkDocument> {
     const link = await this.linkModel.findOne({ linkToken }).exec();
     if (!link) {
       throw new NotFoundException('Invalid or unknown link');
     }
-    link.status = LinkStatus.COMPLETED;
-    link.completedAt = new Date();
-    return link.save();
+    return this.markReviewed(link._id as Types.ObjectId, new Date());
+  }
+
+  // Idempotent: the thank-you is scheduled at most once and a pending reminder is cancelled.
+  async markReviewed(
+    linkId: Types.ObjectId,
+    reviewedAt: Date,
+    review?: { reviewId?: string; reviewerName?: string; rating?: number },
+  ): Promise<OutreachLinkDocument> {
+    await this.linkModel.updateOne(
+      { _id: linkId, status: { $ne: LinkStatus.COMPLETED } },
+      {
+        $set: {
+          status: LinkStatus.COMPLETED,
+          completedAt: reviewedAt,
+          ...(review && {
+            reviewId: review.reviewId,
+            reviewerName: review.reviewerName,
+            reviewRating: review.rating,
+          }),
+        },
+      },
+    );
+    await this.linkModel.updateOne(
+      { _id: linkId, reminderStatus: FollowUpStatus.SCHEDULED },
+      { $set: { reminderStatus: FollowUpStatus.SKIPPED } },
+    );
+    await this.linkModel.updateOne(
+      { _id: linkId, followUpEnabled: true, thankYouStatus: FollowUpStatus.NONE },
+      { $set: { thankYouStatus: FollowUpStatus.SCHEDULED } },
+    );
+    return this.linkModel.findById(linkId).exec();
+  }
+
+  async findLinkByToken(linkToken: string): Promise<OutreachLinkDocument> {
+    const link = await this.linkModel.findOne({ linkToken }).exec();
+    if (!link) {
+      throw new NotFoundException('Invalid or unknown link');
+    }
+    return link;
   }
 
   // ---------- Auto: clientId → clientonboardings → placeId + phone → engage link ----------
@@ -191,7 +528,7 @@ export class OutreachService {
       notes: `Auto GMB link for ${businessInfo.name || client._id} (placeId=${placeId})`,
     });
 
-    const { engageLink } = await this.generateLink({
+    const { link, engageLink } = await this.createLink({
       targetId: String(target._id),
       reachOutType: ReachOutType.GMB_REVIEW_POST,
     });
@@ -199,6 +536,13 @@ export class OutreachService {
     const recipientName =
       businessInfo.ownerName || businessInfo.name || 'there';
     const shouldSendWhatsApp = dto.sendWhatsApp !== false;
+
+    const businessName = (businessInfo.name || '').trim() || 'our business';
+    await this.linkModel.updateOne(
+      { _id: link._id },
+      { $set: { recipientName, recipientPhone: phoneNumber, businessName } },
+    );
+    let reminderDueAt: Date | undefined;
 
     let whatsapp: {
       sent: boolean;
@@ -228,6 +572,27 @@ export class OutreachService {
           metaErrorMessage: sendResult.metaErrorMessage,
           result: sendResult.result,
         };
+
+        const sentAt = new Date();
+        const followUpEnabled =
+          this.followUpSchedulingEnabled() && !sendResult.metaErrorCode;
+        reminderDueAt = followUpEnabled
+          ? new Date(sentAt.getTime() + this.reminderHours() * 60 * 60 * 1000)
+          : undefined;
+        await this.linkModel.updateOne(
+          { _id: link._id },
+          {
+            $set: {
+              sentAt,
+              followUpEnabled,
+              reminderStatus: followUpEnabled ? FollowUpStatus.SCHEDULED : FollowUpStatus.NONE,
+              reminderDueAt,
+              thankYouStatus: FollowUpStatus.NONE,
+            },
+            $push: { messages: buildMessageLog(MessageKind.REVIEW_LINK, sendResult) },
+          },
+        );
+
         if (!sendResult.delivered && sendResult.metaErrorCode === 131049) {
           whatsapp.warning =
             'Meta blocked this Marketing template (131049). This number already received marketing WhatsApps today (e.g. WatchDog). Try a fresh number, wait until tomorrow, or have the person reply first.';
@@ -241,11 +606,16 @@ export class OutreachService {
           delivered: false,
           error: error?.response || error?.message || String(error),
         };
+        await this.linkModel.updateOne(
+          { _id: link._id },
+          { $push: { messages: buildMessageLog(MessageKind.REVIEW_LINK, undefined, error) } },
+        );
       }
     }
 
     return {
       engageLink,
+      linkToken: link.linkToken,
       clientId: String(client._id),
       businessName: businessInfo.name,
       ownerName: businessInfo.ownerName,
@@ -253,8 +623,21 @@ export class OutreachService {
       placeId,
       reviewUrl,
       targetId: String(target._id),
+      reminderDueAt,
       whatsapp,
     };
+  }
+
+  private reminderHours(): number {
+    const hours = Number(this.configService.get<string>('REVIEW_REMINDER_HOURS'));
+    return Number.isFinite(hours) && hours > 0 ? hours : DEFAULT_REMINDER_HOURS;
+  }
+
+  private followUpSchedulingEnabled(): boolean {
+    const raw = (this.configService.get<string>('OUTREACH_FOLLOWUP_CRON_ENABLED') ?? '')
+      .trim()
+      .toLowerCase();
+    return raw === 'true' || raw === '1' || raw === 'yes';
   }
 
   private resolvePlaceId(

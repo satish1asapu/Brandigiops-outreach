@@ -1,15 +1,20 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
+import { ScheduleModule } from '@nestjs/schedule';
 import { OutreachModule } from './outreach/outreach.module';
 import { SecretManagerModule } from './secretemanager';
 import { SecretManagerService } from './services/secretmanagerService';
+import { MongoConnectionGuardService } from './utils/mongoConnectionGuard.service';
+import { MONGO_OPTIONS, buildMongoUri } from './utils/mongoConfig';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    ScheduleModule.forRoot(),
+    SecretManagerModule,
     MongooseModule.forRootAsync({
       imports: [ConfigModule, SecretManagerModule],
       inject: [ConfigService, SecretManagerService],
@@ -17,31 +22,18 @@ import { SecretManagerService } from './services/secretmanagerService';
         configService: ConfigService,
         secretManagerService: SecretManagerService,
       ) => {
-        const environment = configService.get<string>('ENVIRONMENT')?.toUpperCase();
-        const secret = await secretManagerService.getSecrectKey();
-        const env = environment
-          ? environment.charAt(0).toUpperCase() + environment.slice(1).toLowerCase()
-          : undefined;
-
-        let mongoUrl: string;
-        if (configService.get<string>('SSH_TUNNEL') === 'true') {
-          const tunnel = await secretManagerService.sshTunnel();
-          mongoUrl = `mongodb://${tunnel.localHost}:${tunnel.localPort}/${configService.get<string>('DB_NAME')}`;
-          console.log('SSH tunnel MongoDB URI:', mongoUrl);
-        } else {
-          mongoUrl = `mongodb://${secret[`mongoDBDomain${env}`]}/${configService.get<string>('DB_NAME')}`;
-          console.log('Direct MongoDB URI:', mongoUrl);
-        }
-
+        const uri = await buildMongoUri(configService, secretManagerService);
+        console.log('Mongo URI:', uri.replace(/\/\/([^:]+):([^@]+)@/, '//$1:***@'));
         return {
-          uri: mongoUrl,
-          maxPoolSize: 20,
-          serverSelectionTimeoutMS: 5000,
-          socketTimeoutMS: 45000,
+          uri,
+          ...MONGO_OPTIONS,
+          retryAttempts: 30,
+          retryDelay: 3000,
         };
       },
     }),
     OutreachModule,
   ],
+  providers: [MongoConnectionGuardService],
 })
 export class AppModule {}

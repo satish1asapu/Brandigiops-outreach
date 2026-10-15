@@ -5,6 +5,15 @@ export type SendBusinessReviewWhatsAppInput = {
   toPhone: string;
   recipientName: string;
   engageLink: string;
+  businessName?: string;
+};
+
+export type SendTemplateInput = {
+  toPhone: string;
+  templateName: string;
+  // Positional body parameters {{1}}, {{2}}, ... — must match the approved Meta template
+  bodyParams: string[];
+  fallbackText: string;
 };
 
 export type SendBusinessReviewWhatsAppResult = {
@@ -28,6 +37,77 @@ export class WhatsAppService {
   async sendBusinessReviewLink(
     input: SendBusinessReviewWhatsAppInput,
   ): Promise<SendBusinessReviewWhatsAppResult> {
+    const name = this.sanitizeTemplateText(input.recipientName || 'there', 60);
+    const link = this.sanitizeTemplateText(input.engageLink, 1024);
+
+    // Template body:
+    // Hello {{1}},
+    // A review link has been generated...
+    // {{2}}
+    return this.sendTemplate({
+      toPhone: input.toPhone,
+      templateName: this.templateName('GMB_WHATSAPP_TEMPLATE', 'business_review_link'),
+      bodyParams: [name, link],
+      fallbackText: `GMB review link for ${name}: ${link}`,
+    });
+  }
+
+  // Template body expected: {{1}} = name, {{2}} = business name, {{3}} = engage link
+  async sendReviewReminder(
+    input: SendBusinessReviewWhatsAppInput,
+  ): Promise<SendBusinessReviewWhatsAppResult> {
+    const name = this.sanitizeTemplateText(input.recipientName || 'there', 60);
+    const business = this.sanitizeTemplateText(input.businessName || 'our business', 60);
+    const link = this.sanitizeTemplateText(input.engageLink, 1024);
+
+    return this.sendTemplate({
+      toPhone: input.toPhone,
+      templateName: this.templateName('GMB_REMINDER_TEMPLATE', 'business_review_reminder'),
+      bodyParams: [name, business, link],
+      fallbackText: `Reminder for ${name} to leave a Google review for ${business}: ${link}`,
+    });
+  }
+
+  // Template customer_review_request: {{1}} name, {{2}} business, {{3}} engage (trackable) link
+  async sendCustomerReviewRequest(input: {
+    toPhone: string;
+    customerName: string;
+    businessName: string;
+    engageLink: string;
+  }): Promise<SendBusinessReviewWhatsAppResult> {
+    const name = this.sanitizeTemplateText(input.customerName || 'there', 60);
+    const business = this.sanitizeTemplateText(input.businessName || 'our business', 60);
+    const link = this.sanitizeTemplateText(input.engageLink, 1024);
+
+    return this.sendTemplate({
+      toPhone: input.toPhone,
+      templateName: this.templateName(
+        'GMB_CUSTOMER_REVIEW_TEMPLATE',
+        'customer_review_request',
+      ),
+      bodyParams: [name, business, link],
+      fallbackText: `Hi ${name}, please leave a Google review for ${business}: ${link}`,
+    });
+  }
+
+  // Template body expected: {{1}} = name, {{2}} = business name
+  async sendReviewThankYou(input: {
+    toPhone: string;
+    recipientName: string;
+    businessName: string;
+  }): Promise<SendBusinessReviewWhatsAppResult> {
+    const name = this.sanitizeTemplateText(input.recipientName || 'there', 60);
+    const business = this.sanitizeTemplateText(input.businessName || 'our business', 60);
+
+    return this.sendTemplate({
+      toPhone: input.toPhone,
+      templateName: this.templateName('GMB_THANK_YOU_TEMPLATE', 'business_review_thank_you'),
+      bodyParams: [name, business],
+      fallbackText: `Thank you ${name} for your Google review for ${business}`,
+    });
+  }
+
+  async sendTemplate(input: SendTemplateInput): Promise<SendBusinessReviewWhatsAppResult> {
     const phone = this.toWhatsAppContactAddress(input.toPhone);
     if (!phone) {
       throw new BadRequestException('phoneNumber is empty or invalid');
@@ -41,8 +121,7 @@ export class WhatsAppService {
       );
     }
 
-    const templateName =
-      (this.configService.get<string>('GMB_WHATSAPP_TEMPLATE') || 'business_review_link').trim();
+    const templateName = input.templateName;
     const apiUrl =
       (this.configService.get<string>('ENGAGE_API_URL') ||
         'https://api.engage.brandigiops.com/rest/v1/messages').trim();
@@ -53,13 +132,6 @@ export class WhatsAppService {
       (this.configService.get<string>('ENGAGE_ORGANIZATION_ADDRESS') ||
         '1254120681107680').trim();
 
-    const name = this.sanitizeTemplateText(input.recipientName || 'there', 60);
-    const link = this.sanitizeTemplateText(input.engageLink, 1024);
-
-    // Template body:
-    // Hello {{1}},
-    // A review link has been generated...
-    // {{2}}
     const payload = {
       organization_id: organizationId,
       organization_address: organizationAddress,
@@ -76,14 +148,11 @@ export class WhatsAppService {
           components: [
             {
               type: 'body',
-              parameters: [
-                { type: 'text', text: name },
-                { type: 'text', text: link },
-              ],
+              parameters: input.bodyParams.map((text) => ({ type: 'text', text })),
             },
           ],
         },
-        text: `GMB review link for ${name}: ${link}`,
+        text: input.fallbackText,
       },
     };
 
@@ -214,6 +283,10 @@ export class WhatsAppService {
     const digits = (rawPhone || '').replace(/\D/g, '');
     if (!digits) return '';
     return digits.startsWith('91') ? digits : `91${digits}`;
+  }
+
+  private templateName(envKey: string, fallback: string): string {
+    return (this.configService.get<string>(envKey) || fallback).trim();
   }
 
   private sanitizeTemplateText(value: string, max: number): string {

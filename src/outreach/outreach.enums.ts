@@ -23,6 +23,23 @@ export enum LinkStatus {
   EXPIRED = 'expired',
 }
 
+// Lifecycle of one automated WhatsApp follow-up (reminder or thank-you) on a link
+export enum FollowUpStatus {
+  NONE = 'none', // not applicable (no WhatsApp sent, or follow-up disabled)
+  SCHEDULED = 'scheduled', // waiting for the background job
+  SENDING = 'sending', // claimed by a job; never re-sent from this state
+  SENT = 'sent', // accepted by Engage (check messages[] for Meta delivery)
+  FAILED = 'failed', // Engage rejected it after all attempts
+  SKIPPED = 'skipped', // no longer needed (e.g. reviewed before reminder was due)
+}
+
+export enum MessageKind {
+  REVIEW_LINK = 'review_link',
+  CUSTOMER_REVIEW_REQUEST = 'customer_review_request',
+  REMINDER = 'reminder',
+  THANK_YOU = 'thank_you',
+}
+
 export enum TargetType {
   SELF = 'self', // target is the actual decision maker
   GATEKEEPER = 'gatekeeper', // target is an assistant/intermediary
