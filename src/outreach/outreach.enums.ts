@@ -44,3 +44,10 @@ export enum TargetType {
   SELF = 'self', // target is the actual decision maker
   GATEKEEPER = 'gatekeeper', // target is an assistant/intermediary
 }
+
+/** Review link WhatsApp state on clientcustomers row. */
+export enum EndCustomerOutreachStatus {
+  PENDING = 'pending',
+  SENT = 'sent',
+  FAILED = 'failed',
+}

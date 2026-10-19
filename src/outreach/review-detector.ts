@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { Types } from 'mongoose';
 import { OutreachLinkDocument } from './schemas/outreach-link.schema';
+import { SerpApiReviewsService } from './serpapi-reviews.service';
 
 export const REVIEW_DETECTOR = Symbol('REVIEW_DETECTOR');
 
@@ -24,14 +24,6 @@ export interface ReviewDetector {
   ): Promise<DetectedReview[]>;
 }
 
-type SerpApiReview = {
-  review_id?: string;
-  rating?: number;
-  iso_date?: string;
-  user?: { name?: string };
-};
-
-const SERPAPI_URL = 'https://serpapi.com/search.json';
 const MAX_PAGES_PER_PLACE = 3;
 const NAME_TITLES = new Set(['dr', 'mr', 'mrs', 'ms', 'miss', 'prof', 'sri', 'smt', 'shri']);
 
@@ -40,14 +32,11 @@ const NAME_TITLES = new Set(['dr', 'mr', 'mrs', 'ms', 'miss', 'prof', 'sri', 'sm
 @Injectable()
 export class SerpApiReviewDetector implements ReviewDetector {
   private readonly logger = new Logger(SerpApiReviewDetector.name);
-  private readonly apiKey: string;
 
-  constructor(configService: ConfigService) {
-    this.apiKey = (configService.get<string>('SERPAPI_KEY') || '').trim();
-  }
+  constructor(private readonly serpApiReviews: SerpApiReviewsService) {}
 
   get enabled(): boolean {
-    return !!this.apiKey;
+    return this.serpApiReviews.isConfigured();
   }
 
   async detect(
@@ -65,7 +54,11 @@ export class SerpApiReviewDetector implements ReviewDetector {
     for (const [placeId, placeLinks] of byPlace) {
       try {
         const since = new Date(Math.min(...placeLinks.map((l) => this.sentAt(l).getTime())));
-        const reviews = await this.fetchReviewsSince(placeId, since);
+        const { reviews: rawReviews } = await this.serpApiReviews.fetchReviewsForPlace(
+          placeId,
+          { maxPages: MAX_PAGES_PER_PLACE, since },
+        );
+        const reviews = rawReviews.filter((r) => r.iso_date);
         const used = await alreadyMatched(reviews.map((r) => r.review_id).filter(Boolean));
 
         // Oldest link first, so an earlier customer gets credit before a later one
@@ -96,42 +89,6 @@ export class SerpApiReviewDetector implements ReviewDetector {
       }
     }
     return detected;
-  }
-
-  // Newest-first pages until reviews are older than `since` (each page is one paid search)
-  private async fetchReviewsSince(placeId: string, since: Date): Promise<SerpApiReview[]> {
-    const reviews: SerpApiReview[] = [];
-    let nextPageToken: string | undefined;
-
-    for (let page = 0; page < MAX_PAGES_PER_PLACE; page++) {
-      const params = new URLSearchParams({
-        engine: 'google_maps_reviews',
-        place_id: placeId,
-        sort_by: 'newestFirst',
-        hl: 'en',
-        no_cache: 'true',
-        api_key: this.apiKey,
-      });
-      if (nextPageToken) {
-        params.set('next_page_token', nextPageToken);
-        params.set('num', '20');
-      }
-
-      const response = await fetch(`${SERPAPI_URL}?${params}`);
-      const body: any = await response.json();
-      if (!response.ok || body?.error) {
-        throw new Error(body?.error || `SerpApi status ${response.status}`);
-      }
-
-      const pageReviews: SerpApiReview[] = (body.reviews || []).filter((r) => r.iso_date);
-      reviews.push(...pageReviews);
-
-      nextPageToken = body.serpapi_pagination?.next_page_token;
-      const oldest = pageReviews[pageReviews.length - 1];
-      if (!nextPageToken || !oldest || new Date(oldest.iso_date) < since) break;
-    }
-
-    return reviews;
   }
 
   private namesMatch(reviewerName?: string, recipientName?: string): boolean {

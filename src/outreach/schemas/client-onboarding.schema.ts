@@ -24,6 +24,12 @@ export class GoogleMyBusinessEntry {
 }
 
 @Schema({ _id: false })
+export class ClientWebsiteEntry {
+  @Prop()
+  domainName?: string;
+}
+
+@Schema({ _id: false })
 export class BusinessInfo {
   @Prop()
   name?: string;
@@ -51,6 +57,9 @@ export class ClientOnboarding {
 
   @Prop({ type: [GoogleMyBusinessEntry], default: [] })
   googleMyBusiness: GoogleMyBusinessEntry[];
+
+  @Prop({ type: [ClientWebsiteEntry], default: [] })
+  website?: ClientWebsiteEntry[];
 
   @Prop({ default: true })
   isActive?: boolean;

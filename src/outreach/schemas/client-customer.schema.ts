@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
+import { EndCustomerOutreachStatus } from '../outreach.enums';
 
 export type ClientCustomerDocument = ClientCustomer & Document;
 
@@ -18,6 +19,21 @@ export class ClientCustomer {
 
   @Prop({ required: true, index: true })
   phoneNormalized: string;
+
+  @Prop({
+    type: String,
+    enum: EndCustomerOutreachStatus,
+    default: EndCustomerOutreachStatus.PENDING,
+    index: true,
+  })
+  status: EndCustomerOutreachStatus;
+
+  /** When customer_review_request WhatsApp was last submitted successfully. */
+  @Prop()
+  reviewLinkSentAt?: Date;
+
+  @Prop()
+  lastLinkToken?: string;
 }
 
 export const ClientCustomerSchema = SchemaFactory.createForClass(ClientCustomer);

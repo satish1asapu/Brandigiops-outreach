@@ -27,6 +27,7 @@ import {
   TargetType,
   FollowUpStatus,
   MessageKind,
+  EndCustomerOutreachStatus,
 } from './outreach.enums';
 import { WhatsAppService } from './whatsapp.service';
 import { buildMessageLog } from './message-log';
@@ -125,10 +126,25 @@ export class OutreachService {
 
   async listClientCustomers(clientId: string): Promise<ClientCustomerDocument[]> {
     await this.assertClientOnboardingExists(clientId);
-    return this.clientCustomerModel
-      .find({ clientId: new Types.ObjectId(clientId) })
-      .sort({ name: 1 })
-      .exec();
+    return this.findEndCustomers({ clientId });
+  }
+
+  /** All stored end-customers, optionally filtered by client. */
+  async listAllEndCustomers(clientId?: string): Promise<ClientCustomerDocument[]> {
+    if (clientId) {
+      await this.assertClientOnboardingExists(clientId);
+    }
+    return this.findEndCustomers(clientId ? { clientId } : {});
+  }
+
+  private findEndCustomers(filter: {
+    clientId?: string;
+  }): Promise<ClientCustomerDocument[]> {
+    const query: Record<string, unknown> = {};
+    if (filter.clientId) {
+      query.clientId = new Types.ObjectId(filter.clientId);
+    }
+    return this.clientCustomerModel.find(query).sort({ clientId: 1, name: 1 }).exec();
   }
 
   /** One end-customer by phone (must exist in clientcustomers for this client). */
@@ -255,15 +271,29 @@ export class OutreachService {
           metaErrorCode: sendResult.metaErrorCode,
           metaErrorMessage: sendResult.metaErrorMessage,
         };
+        const sentAt = new Date();
         await this.linkModel.updateOne(
           { _id: link._id },
           {
-            $set: { sentAt: new Date() },
+            $set: { sentAt },
             $push: {
               messages: buildMessageLog(MessageKind.CUSTOMER_REVIEW_REQUEST, sendResult),
             },
           },
         );
+        await this.clientCustomerModel.updateOne(
+          { _id: customer._id },
+          {
+            $set: {
+              status: EndCustomerOutreachStatus.SENT,
+              reviewLinkSentAt: sentAt,
+              lastLinkToken: link.linkToken,
+            },
+          },
+        );
+        customer.status = EndCustomerOutreachStatus.SENT;
+        customer.reviewLinkSentAt = sentAt;
+        customer.lastLinkToken = link.linkToken;
       } catch (error: any) {
         whatsapp = {
           sent: false,
@@ -277,6 +307,17 @@ export class OutreachService {
             },
           },
         );
+        await this.clientCustomerModel.updateOne(
+          { _id: customer._id },
+          {
+            $set: {
+              status: EndCustomerOutreachStatus.FAILED,
+              lastLinkToken: link.linkToken,
+            },
+          },
+        );
+        customer.status = EndCustomerOutreachStatus.FAILED;
+        customer.lastLinkToken = link.linkToken;
       }
     }
 
@@ -284,6 +325,8 @@ export class OutreachService {
       customerId: String(customer._id),
       name: customerName,
       phoneNumber,
+      status: customer.status ?? EndCustomerOutreachStatus.PENDING,
+      reviewLinkSentAt: customer.reviewLinkSentAt,
       engageLink: shouldSend ? engageLink : undefined,
       linkToken: link.linkToken,
       whatsapp,
