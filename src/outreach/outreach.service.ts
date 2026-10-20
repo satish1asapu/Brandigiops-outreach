@@ -28,6 +28,7 @@ import {
   FollowUpStatus,
   MessageKind,
   EndCustomerOutreachStatus,
+  CustomerReviewMatchStatus,
 } from './outreach.enums';
 import { WhatsAppService } from './whatsapp.service';
 import { buildMessageLog } from './message-log';
@@ -233,19 +234,7 @@ export class OutreachService {
       reachOutType: ReachOutType.GMB_REVIEW_POST,
     });
 
-    await this.linkModel.updateOne(
-      { _id: link._id },
-      {
-        $set: {
-          recipientName: customerName,
-          recipientPhone: phoneNumber,
-          businessName,
-          followUpEnabled: false,
-          reminderStatus: FollowUpStatus.NONE,
-          thankYouStatus: FollowUpStatus.NONE,
-        },
-      },
-    );
+    const followUpSchedulingOn = this.followUpSchedulingEnabled();
 
     let whatsapp: {
       sent: boolean;
@@ -272,10 +261,26 @@ export class OutreachService {
           metaErrorMessage: sendResult.metaErrorMessage,
         };
         const sentAt = new Date();
+        const followUpEnabled =
+          followUpSchedulingOn && !sendResult.metaErrorCode;
+        const reminderDueAt = followUpEnabled
+          ? new Date(sentAt.getTime() + this.reminderHours() * 60 * 60 * 1000)
+          : undefined;
         await this.linkModel.updateOne(
           { _id: link._id },
           {
-            $set: { sentAt },
+            $set: {
+              recipientName: customerName,
+              recipientPhone: phoneNumber,
+              businessName,
+              sentAt,
+              followUpEnabled,
+              reminderStatus: followUpEnabled
+                ? FollowUpStatus.SCHEDULED
+                : FollowUpStatus.NONE,
+              reminderDueAt,
+              thankYouStatus: FollowUpStatus.NONE,
+            },
             $push: {
               messages: buildMessageLog(MessageKind.CUSTOMER_REVIEW_REQUEST, sendResult),
             },
@@ -288,6 +293,7 @@ export class OutreachService {
               status: EndCustomerOutreachStatus.SENT,
               reviewLinkSentAt: sentAt,
               lastLinkToken: link.linkToken,
+              reviewMatchStatus: CustomerReviewMatchStatus.PENDING,
             },
           },
         );
@@ -330,6 +336,64 @@ export class OutreachService {
       engageLink: shouldSend ? engageLink : undefined,
       linkToken: link.linkToken,
       whatsapp,
+    };
+  }
+
+  /** After ambiguous PostProxy name match — schedule thank-you and cancel reminder. */
+  async confirmManualCustomerReview(clientId: string, phoneNumber: string) {
+    await this.assertClientOnboardingExists(clientId);
+    const phoneNormalized = this.normalizePhoneForStorage(phoneNumber);
+    if (!phoneNormalized) {
+      throw new BadRequestException(`Invalid phoneNumber: ${phoneNumber}`);
+    }
+    const customer = await this.clientCustomerModel
+      .findOne({
+        clientId: new Types.ObjectId(clientId),
+        phoneNormalized,
+      })
+      .exec();
+    if (!customer) {
+      throw new NotFoundException(`Customer not found for phone ${phoneNumber}`);
+    }
+    if (customer.reviewMatchStatus !== CustomerReviewMatchStatus.NEEDS_MANUAL_CONFIRMATION) {
+      throw new BadRequestException(
+        'Customer is not flagged for manual review confirmation',
+      );
+    }
+    const token = customer.lastLinkToken?.trim();
+    if (!token) {
+      throw new BadRequestException('Customer has no review link token');
+    }
+    const link = await this.linkModel
+      .findOne({ linkToken: token, clientId: customer.clientId })
+      .exec();
+    if (!link) {
+      throw new NotFoundException('Outreach link not found for customer');
+    }
+
+    const reviewedAt = customer.reviewPostedAt ?? new Date();
+    const reviewKey =
+      customer.postproxyReviewExternalId?.trim() ||
+      customer.postproxyReviewId?.trim() ||
+      undefined;
+    await this.markReviewed(link._id as Types.ObjectId, reviewedAt, {
+      reviewId: reviewKey,
+      reviewerName: customer.name,
+    });
+    await this.clientCustomerModel.updateOne(
+      { _id: customer._id },
+      {
+        $set: { reviewMatchStatus: CustomerReviewMatchStatus.MATCHED },
+        $unset: { reviewMatchNote: '' },
+      },
+    );
+
+    const updated = await this.linkModel.findById(link._id).exec();
+    return {
+      customerId: String(customer._id),
+      phoneNumber: customer.phoneNormalized,
+      linkToken: token,
+      thankYouScheduled: updated?.thankYouStatus === FollowUpStatus.SCHEDULED,
     };
   }
 

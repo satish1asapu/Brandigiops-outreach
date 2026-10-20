@@ -3,9 +3,11 @@ export type PostProxyTopLevelComment = {
   external_id?: string | null;
   body?: string | null;
   author_username?: string | null;
+  posted_at?: string | null;
   platform_data?: {
     star_rating?: number;
     review_reply_url?: string;
+    update_time?: string;
   } | null;
 };
 

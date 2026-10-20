@@ -60,6 +60,8 @@ import { WhatsAppService } from './whatsapp.service';
 
 import { ReviewFollowUpService } from './review-followup.service';
 
+import { PostProxyCustomerReviewMonitorService } from './postproxy-customer-review-monitor.service';
+
 import { SerpApiReviewDetector, REVIEW_DETECTOR } from './review-detector';
 
 
@@ -97,6 +99,8 @@ import { SerpApiReviewDetector, REVIEW_DETECTOR } from './review-detector';
     WhatsAppService,
 
     ReviewFollowUpService,
+
+    PostProxyCustomerReviewMonitorService,
 
     GmbReviewsService,
 

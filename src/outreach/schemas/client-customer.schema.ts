@@ -1,6 +1,9 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
-import { EndCustomerOutreachStatus } from '../outreach.enums';
+import {
+  CustomerReviewMatchStatus,
+  EndCustomerOutreachStatus,
+} from '../outreach.enums';
 
 export type ClientCustomerDocument = ClientCustomer & Document;
 
@@ -34,6 +37,26 @@ export class ClientCustomer {
 
   @Prop()
   lastLinkToken?: string;
+
+  @Prop({
+    type: String,
+    enum: CustomerReviewMatchStatus,
+    default: CustomerReviewMatchStatus.PENDING,
+    index: true,
+  })
+  reviewMatchStatus?: CustomerReviewMatchStatus;
+
+  @Prop()
+  postproxyReviewId?: string;
+
+  @Prop()
+  postproxyReviewExternalId?: string;
+
+  @Prop()
+  reviewPostedAt?: Date;
+
+  @Prop()
+  reviewMatchNote?: string;
 }
 
 export const ClientCustomerSchema = SchemaFactory.createForClass(ClientCustomer);

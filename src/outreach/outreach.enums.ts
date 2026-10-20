@@ -51,3 +51,10 @@ export enum EndCustomerOutreachStatus {
   SENT = 'sent',
   FAILED = 'failed',
 }
+
+/** PostProxy name-match outcome for end-customer thank-you automation. */
+export enum CustomerReviewMatchStatus {
+  PENDING = 'pending',
+  MATCHED = 'matched',
+  NEEDS_MANUAL_CONFIRMATION = 'needs_manual_confirmation',
+}

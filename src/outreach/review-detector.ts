@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { OutreachLinkDocument } from './schemas/outreach-link.schema';
 import { SerpApiReviewsService } from './serpapi-reviews.service';
+import { reviewerNamesMatch } from './review-name-match.util';
 
 export const REVIEW_DETECTOR = Symbol('REVIEW_DETECTOR');
 
@@ -25,8 +26,6 @@ export interface ReviewDetector {
 }
 
 const MAX_PAGES_PER_PLACE = 3;
-const NAME_TITLES = new Set(['dr', 'mr', 'mrs', 'ms', 'miss', 'prof', 'sri', 'smt', 'shri']);
-
 // Google never exposes the reviewer's phone, so a review is credited to a link when it was
 // posted after the link was sent and the reviewer's Google name matches the stored name.
 @Injectable()
@@ -71,7 +70,7 @@ export class SerpApiReviewDetector implements ReviewDetector {
               r.review_id &&
               !used.has(r.review_id) &&
               new Date(r.iso_date) >= this.sentAt(link) &&
-              this.namesMatch(r.user?.name, link.recipientName),
+              reviewerNamesMatch(r.user?.name, link.recipientName),
           );
           if (!review) continue;
 
@@ -89,23 +88,6 @@ export class SerpApiReviewDetector implements ReviewDetector {
       }
     }
     return detected;
-  }
-
-  private namesMatch(reviewerName?: string, recipientName?: string): boolean {
-    const a = this.nameTokens(reviewerName);
-    const b = this.nameTokens(recipientName);
-    if (!a.length || !b.length) return false;
-
-    const overlap = a.filter((t) => b.includes(t)).length;
-    return overlap >= Math.min(2, a.length, b.length);
-  }
-
-  private nameTokens(name?: string): string[] {
-    return (name || '')
-      .toLowerCase()
-      .replace(/[^a-z\s]/g, ' ')
-      .split(/\s+/)
-      .filter((t) => t.length > 1 && !NAME_TITLES.has(t));
   }
 
   private placeIdFrom(destinationUrl: string): string | undefined {

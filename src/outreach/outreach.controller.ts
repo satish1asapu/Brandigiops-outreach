@@ -34,6 +34,8 @@ import { AutoGenerateGmbDto } from './dto/auto-generate-gmb.dto';
 
 import { ReviewFollowUpService } from './review-followup.service';
 
+import { PostProxyCustomerReviewMonitorService } from './postproxy-customer-review-monitor.service';
+
 import { GmbReviewsService } from './gmb-reviews.service';
 
 import { GmbImpressionsService } from './gmb-impressions.service';
@@ -69,6 +71,8 @@ export class OutreachController {
     private readonly gmbSerpBundleService: GmbSerpBundleService,
 
     private readonly gmbPostsService: GmbPostsService,
+
+    private readonly postProxyCustomerReviewMonitor: PostProxyCustomerReviewMonitorService,
 
   ) {}
 
@@ -504,6 +508,28 @@ export class OutreachController {
 
 
 
+  @Post('outreach/clients/:clientId/customers/:phoneNumber/confirm-review')
+
+  async confirmClientCustomerReview(
+
+    @Param('clientId') clientId: string,
+
+    @Param('phoneNumber') phoneNumber: string,
+
+  ) {
+
+    return this.outreachService.confirmManualCustomerReview(
+
+      clientId,
+
+      decodeURIComponent(phoneNumber),
+
+    );
+
+  }
+
+
+
   @Post('outreach/gmb/auto-generate')
 
   async autoGenerateGmb(@Body() dto: AutoGenerateGmbDto) {
@@ -581,6 +607,18 @@ export class OutreachController {
   async checkReviews() {
 
     return this.reviewFollowUpService.detectReviews();
+
+  }
+
+
+
+  /** PostProxy hourly poll (manual trigger): match new GBP reviews → thank-you / manual flag. */
+
+  @Post('outreach/reviews/check-postproxy')
+
+  async checkReviewsPostProxy() {
+
+    return this.postProxyCustomerReviewMonitor.runPoll('manual-api');
 
   }
 
