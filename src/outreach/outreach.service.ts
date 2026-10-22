@@ -85,10 +85,21 @@ export class OutreachService {
         throw new BadRequestException(`Invalid phoneNumber for "${name}"`);
       }
 
+      const set: Record<string, unknown> = {
+        name,
+        phoneNumber,
+        phoneNormalized,
+        clientId: clientObjectId,
+      };
+      if (row.linkedInProfileName !== undefined) {
+        const li = row.linkedInProfileName.trim();
+        set.linkedInProfileName = li || undefined;
+      }
+
       const doc = await this.clientCustomerModel
         .findOneAndUpdate(
           { clientId: clientObjectId, phoneNormalized },
-          { $set: { name, phoneNumber, phoneNormalized, clientId: clientObjectId } },
+          { $set: set },
           { upsert: true, new: true, runValidators: true },
         )
         .exec();
@@ -128,6 +139,39 @@ export class OutreachService {
   async listClientCustomers(clientId: string): Promise<ClientCustomerDocument[]> {
     await this.assertClientOnboardingExists(clientId);
     return this.findEndCustomers({ clientId });
+  }
+
+  /** Link LinkedIn profile name without overwriting contact person `name`. */
+  async patchClientCustomerLinkedInProfile(
+    clientId: string,
+    phoneNumber: string,
+    linkedInProfileName: string,
+  ) {
+    await this.assertClientOnboardingExists(clientId);
+    const phoneNormalized = this.normalizePhoneForStorage(phoneNumber);
+    if (!phoneNormalized) {
+      throw new BadRequestException(`Invalid phoneNumber: ${phoneNumber}`);
+    }
+    const li = linkedInProfileName.trim();
+    if (!li) {
+      throw new BadRequestException('linkedInProfileName is required');
+    }
+    const customer = await this.clientCustomerModel
+      .findOneAndUpdate(
+        { clientId: new Types.ObjectId(clientId), phoneNormalized },
+        { $set: { linkedInProfileName: li } },
+        { new: true },
+      )
+      .exec();
+    if (!customer) {
+      throw new NotFoundException(`Customer not found for phone ${phoneNumber}`);
+    }
+    return {
+      customerId: String(customer._id),
+      name: customer.name,
+      linkedInProfileName: customer.linkedInProfileName,
+      phoneNumber: customer.phoneNormalized,
+    };
   }
 
   /** All stored end-customers, optionally filtered by client. */
@@ -394,6 +438,207 @@ export class OutreachService {
       phoneNumber: customer.phoneNormalized,
       linkToken: token,
       thankYouScheduled: updated?.thankYouStatus === FollowUpStatus.SCHEDULED,
+    };
+  }
+
+  /** WhatsApp reminder (template business_review_reminder) for an end-customer's latest link. */
+  async sendReminderToClientCustomer(clientId: string, phoneNumber: string) {
+    const { customer, link, businessName } =
+      await this.loadClientCustomerOutreachLink(clientId, phoneNumber);
+    return this.sendReminderForLink(link, businessName, customer);
+  }
+
+  /** WhatsApp thank-you (template business_review_thank_you) for an end-customer's latest link. */
+  async sendThankYouToClientCustomer(clientId: string, phoneNumber: string) {
+    const { customer, link, businessName } =
+      await this.loadClientCustomerOutreachLink(clientId, phoneNumber);
+    return this.sendThankYouForLink(link, businessName, customer);
+  }
+
+  async sendReminderByLinkToken(linkToken: string) {
+    const link = await this.findLinkByToken(linkToken);
+    const businessName = await this.businessNameForLink(link);
+    return this.sendReminderForLink(link, businessName);
+  }
+
+  async sendThankYouByLinkToken(linkToken: string) {
+    const link = await this.findLinkByToken(linkToken);
+    const businessName = await this.businessNameForLink(link);
+    return this.sendThankYouForLink(link, businessName);
+  }
+
+  private async loadClientCustomerOutreachLink(
+    clientId: string,
+    phoneNumber: string,
+  ): Promise<{
+    customer: ClientCustomerDocument;
+    link: OutreachLinkDocument;
+    businessName: string;
+  }> {
+    await this.assertClientOnboardingExists(clientId);
+    const phoneNormalized = this.normalizePhoneForStorage(phoneNumber);
+    if (!phoneNormalized) {
+      throw new BadRequestException(`Invalid phoneNumber: ${phoneNumber}`);
+    }
+    const customer = await this.clientCustomerModel
+      .findOne({
+        clientId: new Types.ObjectId(clientId),
+        phoneNormalized,
+      })
+      .exec();
+    if (!customer) {
+      throw new NotFoundException(`Customer not found for phone ${phoneNumber}`);
+    }
+    const token = customer.lastLinkToken?.trim();
+    if (!token) {
+      throw new BadRequestException(
+        'Customer has no review link yet — send a review request first',
+      );
+    }
+    const link = await this.linkModel
+      .findOne({ linkToken: token, clientId: customer.clientId })
+      .exec();
+    if (!link) {
+      throw new NotFoundException('Outreach link not found for customer');
+    }
+    const businessName = await this.businessNameForLink(link);
+    return { customer, link, businessName };
+  }
+
+  private async businessNameForLink(link: OutreachLinkDocument): Promise<string> {
+    if (link.businessName?.trim()) return link.businessName.trim();
+    const client = await this.clientOnboardingModel.findById(link.clientId).exec();
+    return (client?.businessInfo?.name || '').trim() || 'our business';
+  }
+
+  private async sendReminderForLink(
+    link: OutreachLinkDocument,
+    businessName: string,
+    customer?: ClientCustomerDocument,
+  ) {
+    const toPhone = (link.recipientPhone || customer?.phoneNumber || '').trim();
+    if (!toPhone) {
+      throw new BadRequestException('No WhatsApp phone on this outreach link');
+    }
+    const recipientName = (link.recipientName || customer?.name || 'there').trim();
+    const engageLink = this.buildEngageLink(link.linkToken);
+
+    let whatsapp: {
+      sent: boolean;
+      delivered?: boolean;
+      templateName?: string;
+      metaErrorCode?: number;
+      metaErrorMessage?: string;
+      error?: unknown;
+    } = { sent: false };
+
+    try {
+      const sendResult = await this.whatsAppService.sendReviewReminder({
+        toPhone,
+        recipientName,
+        businessName,
+        engageLink,
+      });
+      whatsapp = {
+        sent: true,
+        delivered: sendResult.delivered,
+        templateName: sendResult.templateName,
+        metaErrorCode: sendResult.metaErrorCode,
+        metaErrorMessage: sendResult.metaErrorMessage,
+      };
+      await this.linkModel.updateOne(
+        { _id: link._id },
+        {
+          $set: {
+            reminderStatus: FollowUpStatus.SENT,
+            reminderSentAt: new Date(),
+          },
+          $push: { messages: buildMessageLog(MessageKind.REMINDER, sendResult) },
+        },
+      );
+    } catch (error: any) {
+      whatsapp = {
+        sent: false,
+        error: error?.response || error?.message || String(error),
+      };
+      await this.linkModel.updateOne(
+        { _id: link._id },
+        {
+          $push: { messages: buildMessageLog(MessageKind.REMINDER, undefined, error) },
+        },
+      );
+    }
+
+    return {
+      customerId: customer ? String(customer._id) : undefined,
+      phoneNumber: toPhone,
+      linkToken: link.linkToken,
+      engageLink,
+      whatsapp,
+    };
+  }
+
+  private async sendThankYouForLink(
+    link: OutreachLinkDocument,
+    businessName: string,
+    customer?: ClientCustomerDocument,
+  ) {
+    const toPhone = (link.recipientPhone || customer?.phoneNumber || '').trim();
+    if (!toPhone) {
+      throw new BadRequestException('No WhatsApp phone on this outreach link');
+    }
+    const recipientName = (link.recipientName || customer?.name || 'there').trim();
+
+    let whatsapp: {
+      sent: boolean;
+      delivered?: boolean;
+      templateName?: string;
+      metaErrorCode?: number;
+      metaErrorMessage?: string;
+      error?: unknown;
+    } = { sent: false };
+
+    try {
+      const sendResult = await this.whatsAppService.sendReviewThankYou({
+        toPhone,
+        recipientName,
+        businessName,
+      });
+      whatsapp = {
+        sent: true,
+        delivered: sendResult.delivered,
+        templateName: sendResult.templateName,
+        metaErrorCode: sendResult.metaErrorCode,
+        metaErrorMessage: sendResult.metaErrorMessage,
+      };
+      await this.linkModel.updateOne(
+        { _id: link._id },
+        {
+          $set: {
+            thankYouStatus: FollowUpStatus.SENT,
+            thankYouSentAt: new Date(),
+          },
+          $push: { messages: buildMessageLog(MessageKind.THANK_YOU, sendResult) },
+        },
+      );
+    } catch (error: any) {
+      whatsapp = {
+        sent: false,
+        error: error?.response || error?.message || String(error),
+      };
+      await this.linkModel.updateOne(
+        { _id: link._id },
+        {
+          $push: { messages: buildMessageLog(MessageKind.THANK_YOU, undefined, error) },
+        },
+      );
+    }
+
+    return {
+      customerId: customer ? String(customer._id) : undefined,
+      phoneNumber: toPhone,
+      linkToken: link.linkToken,
+      whatsapp,
     };
   }
 

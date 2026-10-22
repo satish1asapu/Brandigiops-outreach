@@ -18,6 +18,8 @@ import {
 
   Put,
 
+  Patch,
+
   Query,
 
   Redirect,
@@ -44,7 +46,10 @@ import { GmbSerpBundleService } from './gmb-serp-bundle.service';
 
 import { GmbPostsService } from './gmb-posts.service';
 
-import { UpsertClientCustomersDto } from './dto/client-customer.dto';
+import {
+  PatchClientCustomerLinkedInDto,
+  UpsertClientCustomersDto,
+} from './dto/client-customer.dto';
 
 import { SendClientCustomerReviewDto } from './dto/send-client-customer-review.dto';
 
@@ -508,6 +513,32 @@ export class OutreachController {
 
 
 
+  @Patch('outreach/clients/:clientId/customers/:phoneNumber/linkedin-profile')
+
+  async patchClientCustomerLinkedIn(
+
+    @Param('clientId') clientId: string,
+
+    @Param('phoneNumber') phoneNumber: string,
+
+    @Body() dto: PatchClientCustomerLinkedInDto,
+
+  ) {
+
+    return this.outreachService.patchClientCustomerLinkedInProfile(
+
+      clientId,
+
+      decodeURIComponent(phoneNumber),
+
+      dto.linkedInProfileName,
+
+    );
+
+  }
+
+
+
   @Post('outreach/clients/:clientId/customers/:phoneNumber/confirm-review')
 
   async confirmClientCustomerReview(
@@ -525,6 +556,70 @@ export class OutreachController {
       decodeURIComponent(phoneNumber),
 
     );
+
+  }
+
+
+
+  @Post('outreach/clients/:clientId/customers/:phoneNumber/send-reminder')
+
+  async sendClientCustomerReminder(
+
+    @Param('clientId') clientId: string,
+
+    @Param('phoneNumber') phoneNumber: string,
+
+  ) {
+
+    return this.outreachService.sendReminderToClientCustomer(
+
+      clientId,
+
+      decodeURIComponent(phoneNumber),
+
+    );
+
+  }
+
+
+
+  @Post('outreach/clients/:clientId/customers/:phoneNumber/send-thank-you')
+
+  async sendClientCustomerThankYou(
+
+    @Param('clientId') clientId: string,
+
+    @Param('phoneNumber') phoneNumber: string,
+
+  ) {
+
+    return this.outreachService.sendThankYouToClientCustomer(
+
+      clientId,
+
+      decodeURIComponent(phoneNumber),
+
+    );
+
+  }
+
+
+
+  @Post('outreach/links/:linkToken/send-reminder')
+
+  async sendLinkReminder(@Param('linkToken') linkToken: string) {
+
+    return this.outreachService.sendReminderByLinkToken(linkToken);
+
+  }
+
+
+
+  @Post('outreach/links/:linkToken/send-thank-you')
+
+  async sendLinkThankYou(@Param('linkToken') linkToken: string) {
+
+    return this.outreachService.sendThankYouByLinkToken(linkToken);
 
   }
 

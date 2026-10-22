@@ -19,6 +19,10 @@ export class CreateTargetDto {
   @IsString()
   name?: string;
 
+  @IsOptional()
+  @IsString()
+  linkedInProfileName?: string;
+
   // Who receives the message (email / role tag) — not the Follow destination
   @IsString()
   @IsNotEmpty()

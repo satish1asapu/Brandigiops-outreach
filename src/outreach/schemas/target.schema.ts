@@ -23,9 +23,13 @@ export class Target {
   @Prop({ required: true })
   platformHandle: string;
 
-  // Display name of the person who receives the WhatsApp / engage link
+  // Contact person name for WhatsApp / engage link (not the LinkedIn page title)
   @Prop()
   name?: string;
+
+  /** LinkedIn profile display name when platformHandle is a LI URL (both names kept). */
+  @Prop()
+  linkedInProfileName?: string;
 
   // Who receives the message (email, role tag, or LinkedIn identifier) —
   // NOT the page to follow. Example: "Procurement-Manager-Linkedin-abb.com"

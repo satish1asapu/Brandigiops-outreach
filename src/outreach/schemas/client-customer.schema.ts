@@ -13,8 +13,13 @@ export class ClientCustomer {
   @Prop({ type: Types.ObjectId, required: true, index: true })
   clientId: Types.ObjectId;
 
+  /** Contact person name (CRM / WhatsApp / review name-match) — do not replace with LinkedIn display name. */
   @Prop({ required: true, trim: true })
   name: string;
+
+  /** Name on the LinkedIn profile when an account is linked (kept separate from `name`). */
+  @Prop({ trim: true })
+  linkedInProfileName?: string;
 
   /** As entered; use phoneNormalized for deduplication. */
   @Prop({ required: true, trim: true })
