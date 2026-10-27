@@ -40,7 +40,7 @@ export class MessageLogEntry {
   at: Date;
 }
 
-const MessageLogEntrySchema = SchemaFactory.createForClass(MessageLogEntry);
+export const MessageLogEntrySchema = SchemaFactory.createForClass(MessageLogEntry);
 
 @Schema({ timestamps: true })
 export class OutreachLink {

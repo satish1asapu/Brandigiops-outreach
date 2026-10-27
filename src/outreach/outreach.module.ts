@@ -22,6 +22,11 @@ import {
 
 import { ClientCustomer, ClientCustomerSchema } from './schemas/client-customer.schema';
 
+import {
+  EngageEndCustomer,
+  EngageEndCustomerSchema,
+} from './schemas/engage-end-customer.schema';
+
 import { GmbReviews, GmbReviewsSchema } from './schemas/gmb-reviews.schema';
 
 import {
@@ -62,6 +67,12 @@ import { ReviewFollowUpService } from './review-followup.service';
 
 import { PostProxyCustomerReviewMonitorService } from './postproxy-customer-review-monitor.service';
 
+import { EngageLeadIntroService } from './engage-lead-intro.service';
+
+import { GmbDailySyncService } from './gmb-daily-sync.service';
+
+import { EngageCustomerFollowUpService } from './engage-customer-followup.service';
+
 import { SerpApiReviewDetector, REVIEW_DETECTOR } from './review-detector';
 
 
@@ -80,6 +91,8 @@ import { SerpApiReviewDetector, REVIEW_DETECTOR } from './review-detector';
 
       { name: ClientCustomer.name, schema: ClientCustomerSchema },
 
+      { name: EngageEndCustomer.name, schema: EngageEndCustomerSchema },
+
       { name: GmbReviews.name, schema: GmbReviewsSchema },
 
       { name: GmbMetricImpressions.name, schema: GmbMetricImpressionsSchema },
@@ -97,6 +110,10 @@ import { SerpApiReviewDetector, REVIEW_DETECTOR } from './review-detector';
     OutreachService,
 
     WhatsAppService,
+
+    EngageLeadIntroService,
+
+    EngageCustomerFollowUpService,
 
     ReviewFollowUpService,
 
@@ -119,6 +136,8 @@ import { SerpApiReviewDetector, REVIEW_DETECTOR } from './review-detector';
     PostProxyPostsService,
 
     GmbPostsService,
+
+    GmbDailySyncService,
 
     { provide: REVIEW_DETECTOR, useClass: SerpApiReviewDetector },
 

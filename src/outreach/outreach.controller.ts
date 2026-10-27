@@ -38,6 +38,10 @@ import { ReviewFollowUpService } from './review-followup.service';
 
 import { PostProxyCustomerReviewMonitorService } from './postproxy-customer-review-monitor.service';
 
+import { GmbDailySyncService } from './gmb-daily-sync.service';
+
+import { EngageCustomerFollowUpService } from './engage-customer-followup.service';
+
 import { GmbReviewsService } from './gmb-reviews.service';
 
 import { GmbImpressionsService } from './gmb-impressions.service';
@@ -79,7 +83,23 @@ export class OutreachController {
 
     private readonly postProxyCustomerReviewMonitor: PostProxyCustomerReviewMonitorService,
 
+    private readonly gmbDailySyncService: GmbDailySyncService,
+
+    private readonly engageCustomerFollowUpService: EngageCustomerFollowUpService,
+
   ) {}
+
+
+
+  /** All clients: reviews (Serp) + posts + impressions (PostProxy) — same as daily 5:45 PM IST cron. */
+
+  @Post('outreach/gmb/daily-sync')
+
+  async runGmbDailySync() {
+
+    return this.gmbDailySyncService.runDailySync('manual-api');
+
+  }
 
 
 
@@ -194,6 +214,62 @@ export class OutreachController {
   ) {
 
     return this.outreachService.upsertClientCustomers(clientId, dto.customers);
+
+  }
+
+
+
+  @Post('outreach/engage-customers/detect-reviews')
+
+  async detectEngageCustomerReviews() {
+
+    return this.engageCustomerFollowUpService.detectReviews('manual-api');
+
+  }
+
+
+
+  @Post('outreach/customers/sync-engage')
+
+  async syncEngageEndCustomers(@Query('limit') limit?: string) {
+
+    const n = limit ? Number(limit) : 100;
+
+    return this.outreachService.syncEngageEndCustomers(n);
+
+  }
+
+
+
+  @Get('outreach/engage-customers')
+
+  async listEngageEndCustomers(
+
+    @Query('limit') limit?: string,
+
+    @Query('sender_phone') senderPhone?: string,
+
+  ) {
+
+    const n = limit ? Number(limit) : 100;
+
+    const phone = (senderPhone || '').trim() || undefined;
+
+    const sync = await this.outreachService.syncEngageEndCustomers(n, phone);
+
+    const events = await this.outreachService.listEngageEndCustomers(phone);
+
+    return {
+
+      sender_phone: phone,
+
+      count: events.length,
+
+      events,
+
+      sync,
+
+    };
 
   }
 

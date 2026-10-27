@@ -21,6 +21,10 @@ import { SendClientCustomerReviewDto } from './dto/send-client-customer-review.d
 import { SendClientCustomersReviewDto } from './dto/send-client-customers-review.dto';
 import { ClientCustomer, ClientCustomerDocument } from './schemas/client-customer.schema';
 import {
+  EngageEndCustomer,
+  EngageEndCustomerDocument,
+} from './schemas/engage-end-customer.schema';
+import {
   Platform,
   ReachOutType,
   LinkStatus,
@@ -29,9 +33,17 @@ import {
   MessageKind,
   EndCustomerOutreachStatus,
   CustomerReviewMatchStatus,
+  EngageWhatsAppFollowUpStatus,
 } from './outreach.enums';
+import {
+  engageCreatedAt,
+  engageEventWasSent,
+  recipientNameFromEngageData,
+  recipientPhoneFromEngageData,
+} from './engage-followup.util';
 import { WhatsAppService } from './whatsapp.service';
 import { buildMessageLog } from './message-log';
+import { EngageLeadIntroService } from './engage-lead-intro.service';
 
 const LINK_EXPIRY_DAYS = 30;
 const DEFAULT_REMINDER_HOURS = 48;
@@ -47,8 +59,11 @@ export class OutreachService {
     private clientOnboardingModel: Model<ClientOnboardingDocument>,
     @InjectModel(ClientCustomer.name)
     private clientCustomerModel: Model<ClientCustomerDocument>,
+    @InjectModel(EngageEndCustomer.name)
+    private engageEndCustomerModel: Model<EngageEndCustomerDocument>,
     private readonly configService: ConfigService,
     private readonly whatsAppService: WhatsAppService,
+    private readonly engageLeadIntro: EngageLeadIntroService,
   ) {
     // Local: http://localhost:3005/r  | Prod: https://your-domain.com/r
     this.baseRedirectUrl =
@@ -107,6 +122,121 @@ export class OutreachService {
     }
 
     return { saved: saved.length, customers: saved };
+  }
+
+  /** Pull Engage lead_intro_events → engageendcustomers (raw API payload per row). */
+  async syncEngageEndCustomers(limit = 100, senderPhone?: string) {
+    const events = await this.engageLeadIntro.fetchRecentEvents(limit, senderPhone);
+    const syncedAt = new Date();
+    const summary = {
+      fetched: events.length,
+      upserted: 0,
+      skipped: 0,
+      results: [] as Array<{ id: string; created: boolean }>,
+    };
+
+    for (const event of events) {
+      const id = String(event.id || '').trim();
+      if (!id) {
+        summary.skipped += 1;
+        continue;
+      }
+
+      const eventData = event as unknown as Record<string, unknown>;
+      const existing = await this.engageEndCustomerModel.findOne({ id }).exec();
+      const followUpPatch = this.buildEngageFollowUpPatch(eventData, existing);
+      await this.engageEndCustomerModel
+        .findOneAndUpdate(
+          { id },
+          {
+            $set: {
+              id,
+              data: eventData,
+              syncedAt,
+              ...followUpPatch,
+            },
+          },
+          { upsert: true, new: true },
+        )
+        .exec();
+
+      summary.results.push({ id, created: !existing });
+      summary.upserted += 1;
+    }
+
+    return summary;
+  }
+
+  async listEngageEndCustomers(senderPhone?: string): Promise<Record<string, unknown>[]> {
+    const filter: Record<string, unknown> = {};
+    const variants = this.senderPhoneQueryVariants(senderPhone);
+    if (variants.length) {
+      filter['data.sender_phone'] = { $in: variants };
+    }
+    const docs = await this.engageEndCustomerModel
+      .find(filter)
+      .sort({ 'data.created_at': -1, updatedAt: -1 })
+      .exec();
+    return docs.map((doc) => ({
+      ...(doc.data || {}),
+      _engageFollowUp: {
+        engageEventId: doc.id,
+        followUpEnabled: doc.followUpEnabled,
+        recipientName: doc.recipientName,
+        recipientPhoneNormalized: doc.recipientPhoneNormalized,
+        thankYouStatus: doc.thankYouStatus,
+        reminderStatus: doc.reminderStatus,
+        reminderDueAt: doc.reminderDueAt,
+        thankYouSentAt: doc.thankYouSentAt,
+        reminderSentAt: doc.reminderSentAt,
+        reviewDetectedAt: doc.reviewDetectedAt,
+      },
+    }));
+  }
+
+  private buildEngageFollowUpPatch(
+    event: Record<string, unknown>,
+    existing: EngageEndCustomerDocument | null,
+  ): Record<string, unknown> {
+    if (!engageEventWasSent(event)) {
+      return { followUpEnabled: false };
+    }
+    const phone = this.normalizePhoneForStorage(recipientPhoneFromEngageData(event));
+    const name = recipientNameFromEngageData(event);
+    const created = engageCreatedAt(event) || new Date();
+    const hours = this.reminderHoursForEngage();
+    const patch: Record<string, unknown> = {
+      followUpEnabled: true,
+      recipientName: name,
+      recipientPhoneNormalized: phone || undefined,
+    };
+    if (!existing?.thankYouStatus) {
+      patch.thankYouStatus = EngageWhatsAppFollowUpStatus.PENDING;
+    }
+    if (!existing?.reminderStatus) {
+      patch.reminderStatus = EngageWhatsAppFollowUpStatus.SCHEDULED;
+    }
+    if (!existing?.reminderDueAt) {
+      patch.reminderDueAt = new Date(created.getTime() + hours * 60 * 60 * 1000);
+    }
+    return patch;
+  }
+
+  private reminderHoursForEngage(): number {
+    const hours = Number(this.configService.get<string>('REVIEW_REMINDER_HOURS'));
+    return Number.isFinite(hours) && hours > 0 ? hours : 48;
+  }
+
+  /** Digits as Engage stores on sender_phone (with/without leading 91). */
+  private senderPhoneQueryVariants(raw?: string): string[] {
+    const digits = (raw || '').replace(/\D/g, '');
+    if (!digits) return [];
+    const normalized = digits.startsWith('91') ? digits : `91${digits}`;
+    const out = new Set<string>([normalized, digits]);
+    if (normalized.startsWith('91') && normalized.length > 10) {
+      out.add(normalized.slice(2));
+    }
+    return [...out];
   }
 
   /** Replace the full customer list for a client (removes numbers not in the payload). */
@@ -643,7 +773,14 @@ export class OutreachService {
   }
 
   private async assertClientOnboardingExists(clientId: string): Promise<void> {
-    const exists = await this.clientOnboardingModel.exists({ _id: clientId }).exec();
+    if (!Types.ObjectId.isValid(clientId)) {
+      throw new BadRequestException(
+        `Invalid clientId "${clientId}" — use a MongoDB ObjectId from clientonboardings (e.g. 699b09ea60e1953d60ae58f4)`,
+      );
+    }
+    const exists = await this.clientOnboardingModel
+      .exists({ _id: new Types.ObjectId(clientId) })
+      .exec();
     if (!exists) {
       throw new NotFoundException(`Client onboarding not found for id ${clientId}`);
     }

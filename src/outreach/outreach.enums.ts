@@ -58,3 +58,12 @@ export enum CustomerReviewMatchStatus {
   MATCHED = 'matched',
   NEEDS_MANUAL_CONFIRMATION = 'needs_manual_confirmation',
 }
+
+/** Engage end-customer WhatsApp reminder / thank-you (engageendcustomers collection). */
+export enum EngageWhatsAppFollowUpStatus {
+  PENDING = 'pending',
+  SCHEDULED = 'scheduled',
+  SENT = 'sent',
+  SKIPPED = 'skipped',
+  FAILED = 'failed',
+}

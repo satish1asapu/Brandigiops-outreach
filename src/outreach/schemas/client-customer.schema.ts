@@ -62,6 +62,31 @@ export class ClientCustomer {
 
   @Prop()
   reviewMatchNote?: string;
+
+  /** Engage lead_intro_events — business WhatsApp that sent the intro / review link. */
+  @Prop({ trim: true, index: true, sparse: true })
+  senderPhoneNumber?: string;
+
+  /** Latest Engage `lead_intro_events.id` synced for this customer. */
+  @Prop({ trim: true })
+  engageLeadIntroEventId?: string;
+
+  /** Engage `reason` — WhatsApp review-link send outcome (e.g. sent). */
+  @Prop({ trim: true })
+  engageReason?: string;
+
+  @Prop()
+  engageSent?: boolean;
+
+  /** Nested `messages.status` from Engage when event was fetched. */
+  @Prop({ trim: true })
+  engageMessageStatus?: string;
+
+  @Prop()
+  engageEventCreatedAt?: Date;
+
+  @Prop()
+  engageSyncedAt?: Date;
 }
 
 export const ClientCustomerSchema = SchemaFactory.createForClass(ClientCustomer);
