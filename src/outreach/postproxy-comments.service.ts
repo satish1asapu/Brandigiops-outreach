@@ -154,6 +154,25 @@ export class PostProxyCommentsService {
 
 
 
+  async getProfileComment(commentId: string): Promise<PostProxyTopLevelComment & {
+    replies?: PostProxyCommentReply[];
+  }> {
+    this.assertReady();
+    const params = this.postProxyEnv.withProfileGroupQuery();
+    const url = `${this.postProxyEnv.apiBase}/profiles/${this.postProxyEnv.profileId}/comments/${encodeURIComponent(commentId)}?${params}`;
+    const response = await fetch(url, { headers: this.postProxyEnv.authHeaders() });
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const msg =
+        (json as { message?: string; error?: string })?.message ||
+        (json as { error?: string })?.error ||
+        `PostProxy get comment HTTP ${response.status}`;
+      throw new BadRequestException(msg);
+    }
+    const data = (json as { data?: PostProxyTopLevelComment }).data ?? json;
+    return data as PostProxyTopLevelComment & { replies?: PostProxyCommentReply[] };
+  }
+
   async deleteReply(postproxyReplyId: string): Promise<void> {
 
     this.assertReady();

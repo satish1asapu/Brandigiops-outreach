@@ -38,6 +38,7 @@ import {
 } from './schemas/gmb-metric-impressions.schema';
 
 import { GmbPosts, GmbPostsSchema } from './schemas/gmb-posts.schema';
+import { GmbKeywords, GmbKeywordsSchema } from './schemas/gmb-keywords.schema';
 
 import { GmbReviewsService } from './gmb-reviews.service';
 
@@ -48,6 +49,7 @@ import { SerpApiReviewsService } from './serpapi-reviews.service';
 import { PostProxyEnvService } from './postproxy-env.service';
 
 import { PostProxyMetricsService } from './postproxy-metrics.service';
+import { PostProxyKeywordsService } from './postproxy-keywords.service';
 
 import { GmbSerpBundleService } from './gmb-serp-bundle.service';
 
@@ -60,6 +62,9 @@ import { GmbPostsService } from './gmb-posts.service';
 import { OutreachService } from './outreach.service';
 
 import { OutreachController } from './outreach.controller';
+import { GmbMetricImpressionsController } from './gmb-metric-impressions.controller';
+import { GmbKeywordsController } from './gmb-keywords.controller';
+import { GmbKeywordsService } from './gmb-keywords.service';
 
 import { WhatsAppService } from './whatsapp.service';
 
@@ -99,11 +104,17 @@ import { SerpApiReviewDetector, REVIEW_DETECTOR } from './review-detector';
 
       { name: GmbPosts.name, schema: GmbPostsSchema },
 
+      { name: GmbKeywords.name, schema: GmbKeywordsSchema },
+
     ]),
 
   ],
 
-  controllers: [OutreachController],
+  controllers: [
+    OutreachController,
+    GmbMetricImpressionsController,
+    GmbKeywordsController,
+  ],
 
   providers: [
 
@@ -123,11 +134,15 @@ import { SerpApiReviewDetector, REVIEW_DETECTOR } from './review-detector';
 
     GmbImpressionsService,
 
+    GmbKeywordsService,
+
     SerpApiReviewsService,
 
     PostProxyEnvService,
 
     PostProxyMetricsService,
+
+    PostProxyKeywordsService,
 
     GmbSerpBundleService,
 

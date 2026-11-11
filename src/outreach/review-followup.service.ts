@@ -14,6 +14,10 @@ import { OutreachService } from './outreach.service';
 import { SendBusinessReviewWhatsAppResult, WhatsAppService } from './whatsapp.service';
 import { buildMessageLog } from './message-log';
 import { REVIEW_DETECTOR, ReviewDetector } from './review-detector';
+import {
+  outreachSendRemindersEnabled,
+  outreachSendThankYousEnabled,
+} from './outreach-reminder.config';
 
 const MAX_SEND_ATTEMPTS = 3;
 const BATCH_SIZE = 50;
@@ -65,7 +69,9 @@ export class ReviewFollowUpService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   sendDueReminders() {
-    if (!this.scheduledFollowUpEnabled()) return;
+    if (!this.scheduledFollowUpEnabled() || !outreachSendRemindersEnabled(this.configService)) {
+      return;
+    }
     return this.exclusive('reminders', async () => {
       const now = new Date();
 
@@ -103,7 +109,9 @@ export class ReviewFollowUpService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   sendPendingThankYous() {
-    if (!this.scheduledFollowUpEnabled()) return;
+    if (!this.scheduledFollowUpEnabled() || !outreachSendThankYousEnabled(this.configService)) {
+      return;
+    }
     return this.exclusive('thank-you', () =>
       this.drain(
         THANK_YOU,

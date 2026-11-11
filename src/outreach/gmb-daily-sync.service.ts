@@ -10,12 +10,14 @@ import {
 import { GmbReviewsService } from './gmb-reviews.service';
 import { GmbPostsService } from './gmb-posts.service';
 import { GmbImpressionsService } from './gmb-impressions.service';
+import { GmbKeywordsService } from './gmb-keywords.service';
 
 export type GmbDailySyncSummary = {
   clientsChecked: number;
   reviewsSynced: number;
   postsSynced: number;
   impressionsSynced: number;
+  keywordsSynced: number;
   errors: Array<{ clientId: string; step: string; message: string }>;
 };
 
@@ -30,14 +32,15 @@ export class GmbDailySyncService {
     private readonly gmbReviewsService: GmbReviewsService,
     private readonly gmbPostsService: GmbPostsService,
     private readonly gmbImpressionsService: GmbImpressionsService,
+    private readonly gmbKeywordsService: GmbKeywordsService,
     private readonly configService: ConfigService,
   ) {}
 
-  /** Daily 5:45 PM IST — Serp reviews + PostProxy posts + PostProxy impressions for all GMB clients. */
-  @Cron('45 17 * * *', { timeZone: 'Asia/Kolkata' })
+  /** Daily 5:45 AM IST — Serp reviews + PostProxy posts + impressions + keywords. Change the cron string below to retune the time. */
+  @Cron('45 5 * * *', { timeZone: 'Asia/Kolkata' })
   async cronDailySync(): Promise<void> {
     if (!this.cronEnabled()) return;
-    await this.runDailySync('cron-1745-ist');
+    await this.runDailySync('cron-0545-ist');
   }
 
   async runDailySync(label = 'manual'): Promise<GmbDailySyncSummary> {
@@ -46,9 +49,10 @@ export class GmbDailySyncService {
       reviewsSynced: 0,
       postsSynced: 0,
       impressionsSynced: 0,
+      keywordsSynced: 0,
       errors: [],
     };
-    if (!this.cronEnabled() && label === 'cron-1745-ist') {
+    if (!this.cronEnabled() && label === 'cron-0545-ist') {
       this.logger.debug(`GMB daily sync (${label}) skipped: cron disabled`);
       return empty;
     }
@@ -61,7 +65,7 @@ export class GmbDailySyncService {
     try {
       const summary = await this.syncAllClients();
       this.logger.log(
-        `GMB daily sync (${label}): clients=${summary.clientsChecked} reviews=${summary.reviewsSynced} posts=${summary.postsSynced} impressions=${summary.impressionsSynced} errors=${summary.errors.length}`,
+        `GMB daily sync (${label}): clients=${summary.clientsChecked} reviews=${summary.reviewsSynced} posts=${summary.postsSynced} impressions=${summary.impressionsSynced} keywords=${summary.keywordsSynced} errors=${summary.errors.length}`,
       );
       return summary;
     } finally {
@@ -75,6 +79,7 @@ export class GmbDailySyncService {
       reviewsSynced: 0,
       postsSynced: 0,
       impressionsSynced: 0,
+      keywordsSynced: 0,
       errors: [],
     };
 
@@ -115,6 +120,17 @@ export class GmbDailySyncService {
         summary.errors.push({
           clientId,
           step: 'impressions',
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+
+      try {
+        await this.gmbKeywordsService.syncKeywordsForClient(clientId);
+        summary.keywordsSynced += 1;
+      } catch (e: unknown) {
+        summary.errors.push({
+          clientId,
+          step: 'keywords',
           message: e instanceof Error ? e.message : String(e),
         });
       }

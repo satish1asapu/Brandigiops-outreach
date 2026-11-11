@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -18,8 +23,13 @@ import {
 const REPLY_SOURCE_NOTE =
   'Review replies use PostProxy POST /profiles/:id/comments with parent_id = postproxyCommentId or Google external_id (from PostProxy sync). SerpApi reviewId is kept for URLs only. Requires POSTPROXY_PROFILE_GROUP_ID.';
 
+const REPLY_UPDATE_NOTE =
+  'Google Business has no edit-reply API in PostProxy — PATCH/POST update deletes the prior owner reply (when known) and posts the new text.';
+
 @Injectable()
 export class GmbReviewsService {
+  private readonly logger = new Logger(GmbReviewsService.name);
+
   constructor(
     @InjectModel(ClientOnboarding.name)
     private clientOnboardingModel: Model<ClientOnboardingDocument>,
@@ -35,7 +45,11 @@ export class GmbReviewsService {
     clientId: string,
     reviewId: string,
     comment: string,
-    options: { gmbId?: string; placeId?: string } = {},
+    options: {
+      gmbId?: string;
+      placeId?: string;
+      postproxyCommentId?: string;
+    } = {},
   ) {
     if (!comment?.trim()) {
       throw new BadRequestException('comment is required');
@@ -50,6 +64,7 @@ export class GmbReviewsService {
       googleLocationId,
       reviewId,
       reviewRow,
+      options.postproxyCommentId,
     );
 
     const postproxyReply = await this.postProxyComments.replyToReview(
@@ -101,6 +116,103 @@ export class GmbReviewsService {
     };
   }
 
+  /**
+   * Replace owner reply text. PostProxy Profile Comments API has no PATCH for GBP —
+   * we delete the stored reply id (if any) then post a new reply on the review.
+   */
+  async updateReviewReply(
+    clientId: string,
+    reviewId: string,
+    comment: string,
+    options: {
+      gmbId?: string;
+      placeId?: string;
+      postproxyCommentId?: string;
+      postproxyReplyId?: string;
+    } = {},
+  ) {
+    if (!comment?.trim()) {
+      throw new BadRequestException('comment is required');
+    }
+
+    const client = await this.loadClient(clientId);
+    const clientIdStr = String(clientId);
+    const { mongoGmbId, googleLocationId, reviewRow } =
+      await this.resolveReviewContext(client, reviewId, clientIdStr, options);
+
+    const existingReplyId = await this.resolvePostProxyReplyId(
+      googleLocationId,
+      reviewId,
+      reviewRow,
+      options,
+    );
+    if (existingReplyId) {
+      try {
+        await this.postProxyComments.deleteReply(existingReplyId);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        this.logger.warn(`Delete before update skipped (${existingReplyId}): ${msg}`);
+      }
+    }
+
+    const resolved = await this.resolvePostProxyReplyParent(
+      googleLocationId,
+      reviewId,
+      reviewRow,
+      options.postproxyCommentId,
+    );
+
+    const postproxyReply = await this.postProxyComments.replyToReview(
+      resolved.parentIdForPost,
+      comment.trim(),
+    );
+
+    const updateTime = new Date().toISOString();
+    const setFields: Record<string, unknown> = {
+      'reviews.$.reviewReply': { comment: comment.trim(), updateTime },
+      'reviews.$.ownerResponse': {
+        text: comment.trim(),
+        isoDate: updateTime,
+      },
+      'reviews.$.postproxyReplyId': postproxyReply.id,
+      'reviews.$.postproxyReplyStatus': postproxyReply.status,
+    };
+    if (resolved.postproxyParentId) {
+      setFields['reviews.$.postproxyParentId'] = resolved.postproxyParentId;
+    }
+    if (resolved.postproxyCommentId) {
+      setFields['reviews.$.postproxyCommentId'] = resolved.postproxyCommentId;
+    }
+
+    const updated = await this.gmbReviewsModel
+      .findOneAndUpdate(
+        { clientId: clientIdStr, gmbId: mongoGmbId, 'reviews.reviewId': reviewId },
+        { $set: setFields },
+        { new: true },
+      )
+      .exec();
+
+    if (!updated) {
+      throw new NotFoundException(
+        `Review ${reviewId} not found in gmbreviews for this client — sync reviews first (POST .../reviews/sync).`,
+      );
+    }
+
+    return {
+      replySourceNote: REPLY_SOURCE_NOTE,
+      replyUpdateNote: REPLY_UPDATE_NOTE,
+      message: 'Review reply updated via PostProxy (replaced) and saved to gmbreviews',
+      clientId: clientIdStr,
+      gmbId: mongoGmbId,
+      reviewId,
+      previousPostproxyReplyId: existingReplyId,
+      postproxyParentId: resolved.postproxyParentId ?? resolved.parentIdForPost,
+      postproxyReply,
+      comment: comment.trim(),
+      collection: 'gmbreviews',
+    };
+  }
+
   async deleteReviewReply(
     clientId: string,
     reviewId: string,
@@ -108,19 +220,22 @@ export class GmbReviewsService {
   ) {
     const client = await this.loadClient(clientId);
     const clientIdStr = String(clientId);
-    const { mongoGmbId, reviewRow } = await this.resolveReviewContext(
+    const { mongoGmbId, googleLocationId, reviewRow } = await this.resolveReviewContext(
       client,
       reviewId,
       clientIdStr,
       options,
     );
 
-    const postproxyReplyId =
-      options.postproxyReplyId?.trim() ||
-      (reviewRow?.postproxyReplyId as string | undefined);
+    const postproxyReplyId = await this.resolvePostProxyReplyId(
+      googleLocationId,
+      reviewId,
+      reviewRow,
+      options,
+    );
     if (!postproxyReplyId) {
       throw new BadRequestException(
-        'postproxyReplyId is required (from prior reply response or reviews[].postproxyReplyId in DB).',
+        'No owner reply found for this review (sync reviews or pass postproxyReplyId from your last reply).',
       );
     }
 
@@ -398,15 +513,60 @@ export class GmbReviewsService {
     });
   }
 
+  private async resolvePostProxyReplyId(
+    googleLocationId: string,
+    serpReviewId: string,
+    reviewRow?: Record<string, unknown>,
+    options: { postproxyReplyId?: string; postproxyCommentId?: string } = {},
+  ): Promise<string | undefined> {
+    const explicit = options.postproxyReplyId?.trim();
+    if (explicit) return explicit;
+
+    const stored = (reviewRow?.postproxyReplyId as string | undefined)?.trim();
+    if (stored) return stored;
+
+    let reviewCommentId =
+      options.postproxyCommentId?.trim() ||
+      (reviewRow?.postproxyCommentId as string | undefined)?.trim();
+    if (!reviewCommentId) {
+      const resolved = await this.resolvePostProxyReplyParent(
+        googleLocationId,
+        serpReviewId,
+        reviewRow,
+      );
+      reviewCommentId = resolved.postproxyCommentId || resolved.parentIdForPost;
+    }
+    if (!reviewCommentId) return undefined;
+
+    try {
+      const detail = await this.postProxyComments.getProfileComment(reviewCommentId);
+      const replies = (detail as { replies?: { id?: string }[] }).replies ?? [];
+      return replies.map((r) => r.id?.trim()).find(Boolean);
+    } catch {
+      return undefined;
+    }
+  }
+
   private async resolvePostProxyReplyParent(
     googleLocationId: string,
     serpReviewId: string,
     reviewRow?: Record<string, unknown>,
+    postproxyCommentIdOverride?: string,
   ): Promise<{
     parentIdForPost: string;
     postproxyParentId?: string;
     postproxyCommentId?: string;
   }> {
+    const override = postproxyCommentIdOverride?.trim();
+    if (override) {
+      const storedParent = (reviewRow?.postproxyParentId as string | undefined)?.trim();
+      return {
+        parentIdForPost: override,
+        postproxyCommentId: override,
+        postproxyParentId: storedParent,
+      };
+    }
+
     const storedCommentId = (reviewRow?.postproxyCommentId as string | undefined)?.trim();
     const storedParent = (reviewRow?.postproxyParentId as string | undefined)?.trim();
     const reviewerName = reviewRow?.reviewerName as string | undefined;

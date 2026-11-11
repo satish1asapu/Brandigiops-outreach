@@ -44,6 +44,10 @@ import {
 import { WhatsAppService } from './whatsapp.service';
 import { buildMessageLog } from './message-log';
 import { EngageLeadIntroService } from './engage-lead-intro.service';
+import {
+  outreachSendRemindersEnabled,
+  outreachSendThankYousEnabled,
+} from './outreach-reminder.config';
 
 const LINK_EXPIRY_DAYS = 30;
 const DEFAULT_REMINDER_HOURS = 48;
@@ -213,10 +217,13 @@ export class OutreachService {
     if (!existing?.thankYouStatus) {
       patch.thankYouStatus = EngageWhatsAppFollowUpStatus.PENDING;
     }
+    const scheduleReminder = outreachSendRemindersEnabled(this.configService);
     if (!existing?.reminderStatus) {
-      patch.reminderStatus = EngageWhatsAppFollowUpStatus.SCHEDULED;
+      patch.reminderStatus = scheduleReminder
+        ? EngageWhatsAppFollowUpStatus.SCHEDULED
+        : EngageWhatsAppFollowUpStatus.SKIPPED;
     }
-    if (!existing?.reminderDueAt) {
+    if (!existing?.reminderDueAt && scheduleReminder) {
       patch.reminderDueAt = new Date(created.getTime() + hours * 60 * 60 * 1000);
     }
     return patch;
@@ -437,7 +444,9 @@ export class OutreachService {
         const sentAt = new Date();
         const followUpEnabled =
           followUpSchedulingOn && !sendResult.metaErrorCode;
-        const reminderDueAt = followUpEnabled
+        const scheduleReminder =
+          followUpEnabled && outreachSendRemindersEnabled(this.configService);
+        const reminderDueAt = scheduleReminder
           ? new Date(sentAt.getTime() + this.reminderHours() * 60 * 60 * 1000)
           : undefined;
         await this.linkModel.updateOne(
@@ -449,9 +458,11 @@ export class OutreachService {
               businessName,
               sentAt,
               followUpEnabled,
-              reminderStatus: followUpEnabled
+              reminderStatus: scheduleReminder
                 ? FollowUpStatus.SCHEDULED
-                : FollowUpStatus.NONE,
+                : followUpEnabled
+                  ? FollowUpStatus.SKIPPED
+                  : FollowUpStatus.NONE,
               reminderDueAt,
               thankYouStatus: FollowUpStatus.NONE,
             },
@@ -646,6 +657,11 @@ export class OutreachService {
     businessName: string,
     customer?: ClientCustomerDocument,
   ) {
+    if (!outreachSendRemindersEnabled(this.configService)) {
+      throw new BadRequestException(
+        'Review reminders are disabled (OUTREACH_SEND_REMINDERS=false)',
+      );
+    }
     const toPhone = (link.recipientPhone || customer?.phoneNumber || '').trim();
     if (!toPhone) {
       throw new BadRequestException('No WhatsApp phone on this outreach link');
@@ -713,6 +729,11 @@ export class OutreachService {
     businessName: string,
     customer?: ClientCustomerDocument,
   ) {
+    if (!outreachSendThankYousEnabled(this.configService)) {
+      throw new BadRequestException(
+        'Thank-you messages are disabled (OUTREACH_SEND_THANK_YOUS=false)',
+      );
+    }
     const toPhone = (link.recipientPhone || customer?.phoneNumber || '').trim();
     if (!toPhone) {
       throw new BadRequestException('No WhatsApp phone on this outreach link');
@@ -972,9 +993,12 @@ export class OutreachService {
       { _id: linkId, reminderStatus: FollowUpStatus.SCHEDULED },
       { $set: { reminderStatus: FollowUpStatus.SKIPPED } },
     );
+    const thankYouNext = outreachSendThankYousEnabled(this.configService)
+      ? FollowUpStatus.SCHEDULED
+      : FollowUpStatus.SKIPPED;
     await this.linkModel.updateOne(
       { _id: linkId, followUpEnabled: true, thankYouStatus: FollowUpStatus.NONE },
-      { $set: { thankYouStatus: FollowUpStatus.SCHEDULED } },
+      { $set: { thankYouStatus: thankYouNext } },
     );
     return this.linkModel.findById(linkId).exec();
   }
@@ -1065,7 +1089,9 @@ export class OutreachService {
         const sentAt = new Date();
         const followUpEnabled =
           this.followUpSchedulingEnabled() && !sendResult.metaErrorCode;
-        reminderDueAt = followUpEnabled
+        const scheduleReminder =
+          followUpEnabled && outreachSendRemindersEnabled(this.configService);
+        reminderDueAt = scheduleReminder
           ? new Date(sentAt.getTime() + this.reminderHours() * 60 * 60 * 1000)
           : undefined;
         await this.linkModel.updateOne(
@@ -1074,7 +1100,11 @@ export class OutreachService {
             $set: {
               sentAt,
               followUpEnabled,
-              reminderStatus: followUpEnabled ? FollowUpStatus.SCHEDULED : FollowUpStatus.NONE,
+              reminderStatus: scheduleReminder
+                ? FollowUpStatus.SCHEDULED
+                : followUpEnabled
+                  ? FollowUpStatus.SKIPPED
+                  : FollowUpStatus.NONE,
               reminderDueAt,
               thankYouStatus: FollowUpStatus.NONE,
             },

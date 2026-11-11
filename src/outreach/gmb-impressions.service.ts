@@ -135,6 +135,85 @@ export class GmbImpressionsService {
     return this.getStoredImpressionsForClient(clientId, options);
   }
 
+  /**
+   * Same response shape as Brandigiops `services/api` — `GET /gmbImpressions/get`.
+   * Reads Mongo `gmbmetricsimpressions` only (no PostProxy on this call).
+   */
+  async getImpressionMainApi(
+    clientId: string,
+    gmbId: string,
+    startDate: string,
+    endDate: string,
+  ) {
+    if (!startDate?.trim() || !endDate?.trim()) {
+      throw new BadRequestException(
+        'startDate and endDate query params are required (YYYY-MM-DD).',
+      );
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      throw new BadRequestException('Invalid date format. Use YYYY-MM-DD.');
+    }
+    if (start > end) {
+      throw new BadRequestException('Start date cannot be after end date.');
+    }
+
+    const dateRangeDuration =
+      (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
+    const previousStart = new Date(start);
+    previousStart.setDate(previousStart.getDate() - dateRangeDuration - 1);
+    const previousEnd = new Date(end);
+    previousEnd.setDate(previousEnd.getDate() - dateRangeDuration - 1);
+
+    const documents = await this.findImpressionDocuments(
+      clientId?.trim() ?? '',
+      gmbId?.trim() ?? '',
+    );
+
+    return documents.map((doc) => {
+      const documentData = doc.toObject() as unknown as Record<string, unknown>;
+      const summarized = this.summarizeDocument(
+        documentData,
+        start,
+        end,
+        previousStart,
+        previousEnd,
+      );
+      const updatedAt = doc.get('updatedAt') as Date | undefined;
+
+      return {
+        clientId: documentData.clientId,
+        gmbId: documentData.gmbId,
+        domain: documentData.domain,
+        ...summarized,
+        dateRange: {
+          current: { start: startDate, end: endDate },
+          previous: {
+            start: previousStart.toISOString().split('T')[0],
+            end: previousEnd.toISOString().split('T')[0],
+          },
+        },
+        location: documentData.location,
+        lastSync: updatedAt ? updatedAt.toISOString().split('T')[0] : undefined,
+      };
+    });
+  }
+
+  private async findImpressionDocuments(clientId: string, gmbId: string) {
+    if (clientId && gmbId) {
+      return this.impressionsModel.find({ clientId, gmbId }).exec();
+    }
+    if (clientId) {
+      return this.impressionsModel.find({ clientId }).exec();
+    }
+    if (gmbId) {
+      return this.impressionsModel.find({ gmbId }).exec();
+    }
+    return this.impressionsModel.find().exec();
+  }
+
   async getStoredImpressionsForClient(
     clientId: string,
     options: {

@@ -45,6 +45,7 @@ import { EngageCustomerFollowUpService } from './engage-customer-followup.servic
 import { GmbReviewsService } from './gmb-reviews.service';
 
 import { GmbImpressionsService } from './gmb-impressions.service';
+import { GmbKeywordsService } from './gmb-keywords.service';
 
 import { GmbSerpBundleService } from './gmb-serp-bundle.service';
 
@@ -59,7 +60,14 @@ import { SendClientCustomerReviewDto } from './dto/send-client-customer-review.d
 
 import { SendClientCustomersReviewDto } from './dto/send-client-customers-review.dto';
 
-import { DeleteReviewReplyDto, ReviewReplyDto } from './dto/review-reply.dto';
+import {
+  DeleteReviewReplyDto,
+  PostDeleteReviewReplyDto,
+  PostReviewReplyDto,
+  PostUpdateReviewReplyDto,
+  ReviewReplyDto,
+  UpdateReviewReplyDto,
+} from './dto/review-reply.dto';
 
 
 
@@ -77,6 +85,8 @@ export class OutreachController {
 
     private readonly gmbImpressionsService: GmbImpressionsService,
 
+    private readonly gmbKeywordsService: GmbKeywordsService,
+
     private readonly gmbSerpBundleService: GmbSerpBundleService,
 
     private readonly gmbPostsService: GmbPostsService,
@@ -91,7 +101,7 @@ export class OutreachController {
 
 
 
-  /** All clients: reviews (Serp) + posts + impressions (PostProxy) — same as daily 5:45 PM IST cron. */
+  /** All clients: reviews + posts + impressions + keywords — same as daily 5:45 AM IST cron. */
 
   @Post('outreach/gmb/daily-sync')
 
@@ -327,60 +337,102 @@ export class OutreachController {
 
 
 
-  @Put('outreach/clients/:clientId/reviews/:reviewId/reply')
-
-  async replyToClientReview(
-
+  /** Owner reply on a synced GMB review (PostProxy → Google). Review must exist in `gmbreviews` (sync first). */
+  @Post('outreach/clients/:clientId/reviews/reply')
+  async postClientReviewReply(
     @Param('clientId') clientId: string,
-
-    @Param('reviewId') reviewId: string,
-
-    @Body() dto: ReviewReplyDto,
-
+    @Body() dto: PostReviewReplyDto,
   ) {
-
-    return this.gmbReviewsService.replyToReview(
-
-      clientId,
-
-      decodeURIComponent(reviewId),
-
-      dto.comment,
-
-      { gmbId: dto.gmbId, placeId: dto.placeId },
-
-    );
-
+    return this.gmbReviewsService.replyToReview(clientId, dto.reviewId.trim(), dto.comment, {
+      gmbId: dto.gmbId,
+      placeId: dto.placeId,
+      postproxyCommentId: dto.postproxyCommentId,
+    });
   }
 
+  @Put('outreach/clients/:clientId/reviews/:reviewId/reply')
+  async replyToClientReview(
+    @Param('clientId') clientId: string,
+    @Param('reviewId') reviewId: string,
+    @Body() dto: ReviewReplyDto,
+  ) {
+    return this.gmbReviewsService.replyToReview(
+      clientId,
+      decodeURIComponent(reviewId),
+      dto.comment,
+      {
+        gmbId: dto.gmbId,
+        placeId: dto.placeId,
+        postproxyCommentId: dto.postproxyCommentId,
+      },
+    );
+  }
 
+  /** Replace owner reply text (body includes reviewId — easiest for dashboards). */
+  @Post('outreach/clients/:clientId/reviews/reply/update')
+  async postUpdateClientReviewReply(
+    @Param('clientId') clientId: string,
+    @Body() dto: PostUpdateReviewReplyDto,
+  ) {
+    return this.gmbReviewsService.updateReviewReply(
+      clientId,
+      dto.reviewId.trim(),
+      dto.comment,
+      {
+        gmbId: dto.gmbId,
+        placeId: dto.placeId,
+        postproxyCommentId: dto.postproxyCommentId,
+        postproxyReplyId: dto.postproxyReplyId,
+      },
+    );
+  }
+
+  @Patch('outreach/clients/:clientId/reviews/:reviewId/reply')
+  async patchClientReviewReply(
+    @Param('clientId') clientId: string,
+    @Param('reviewId') reviewId: string,
+    @Body() dto: UpdateReviewReplyDto,
+  ) {
+    return this.gmbReviewsService.updateReviewReply(
+      clientId,
+      decodeURIComponent(reviewId),
+      dto.comment,
+      {
+        gmbId: dto.gmbId,
+        placeId: dto.placeId,
+        postproxyCommentId: dto.postproxyCommentId,
+      },
+    );
+  }
+
+  /** Remove owner reply from Google (review stays). */
+  @Post('outreach/clients/:clientId/reviews/reply/delete')
+  async postDeleteClientReviewReply(
+    @Param('clientId') clientId: string,
+    @Body() dto: PostDeleteReviewReplyDto,
+  ) {
+    return this.gmbReviewsService.deleteReviewReply(clientId, dto.reviewId.trim(), {
+      gmbId: dto.gmbId,
+      placeId: dto.placeId,
+      postproxyReplyId: dto.postproxyReplyId,
+    });
+  }
 
   @Delete('outreach/clients/:clientId/reviews/:reviewId/reply')
-
   async deleteClientReviewReply(
-
     @Param('clientId') clientId: string,
-
     @Param('reviewId') reviewId: string,
-
     @Body() dto: DeleteReviewReplyDto,
-
   ) {
-
     return this.gmbReviewsService.deleteReviewReply(
-
       clientId,
-
       decodeURIComponent(reviewId),
-
       {
         gmbId: dto.gmbId,
         placeId: dto.placeId,
         postproxyReplyId: dto.postproxyReplyId,
       },
-
     );
-
   }
 
 
@@ -521,7 +573,19 @@ export class OutreachController {
 
   }
 
-
+  /** PostProxy search keywords → gmbkeywords (per month, same shape as main cron). */
+  @Post('outreach/clients/:clientId/keywords/sync')
+  async syncClientGmbKeywords(
+    @Param('clientId') clientId: string,
+    @Query('placeId') placeId?: string,
+    @Query('fromMonth') fromMonth?: string,
+    @Query('toMonth') toMonth?: string,
+  ) {
+    return this.gmbKeywordsService.syncKeywordsForClient(clientId, placeId, {
+      fromMonth,
+      toMonth,
+    });
+  }
 
   @Get('outreach/customers')
 

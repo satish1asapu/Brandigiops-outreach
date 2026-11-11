@@ -25,6 +25,10 @@ import {
 } from './engage-followup.util';
 import { buildMessageLog } from './message-log';
 import { MessageKind } from './outreach.enums';
+import {
+  outreachSendRemindersEnabled,
+  outreachSendThankYousEnabled,
+} from './outreach-reminder.config';
 
 const DEFAULT_REMINDER_HOURS = 48;
 
@@ -51,7 +55,9 @@ export class EngageCustomerFollowUpService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async sendDueReminders(): Promise<void> {
-    if (!this.followUpCronEnabled()) return;
+    if (!this.followUpCronEnabled() || !outreachSendRemindersEnabled(this.configService)) {
+      return;
+    }
     const now = new Date();
     const due = await this.engageEndCustomerModel
       .find({
@@ -70,7 +76,9 @@ export class EngageCustomerFollowUpService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async sendDueThankYous(): Promise<void> {
-    if (!this.followUpCronEnabled()) return;
+    if (!this.followUpCronEnabled() || !outreachSendThankYousEnabled(this.configService)) {
+      return;
+    }
     const due = await this.engageEndCustomerModel
       .find({
         followUpEnabled: true,
@@ -159,7 +167,9 @@ export class EngageCustomerFollowUpService {
         $set: {
           reviewDetectedAt: reviewedAt,
           postproxyReviewId: comment.id,
-          thankYouStatus: EngageWhatsAppFollowUpStatus.SCHEDULED,
+          thankYouStatus: outreachSendThankYousEnabled(this.configService)
+            ? EngageWhatsAppFollowUpStatus.SCHEDULED
+            : EngageWhatsAppFollowUpStatus.SKIPPED,
           reminderStatus: EngageWhatsAppFollowUpStatus.SKIPPED,
         },
       },
@@ -167,6 +177,7 @@ export class EngageCustomerFollowUpService {
   }
 
   private async sendReminder(row: EngageEndCustomerDocument): Promise<void> {
+    if (!outreachSendRemindersEnabled(this.configService)) return;
     const phone = row.recipientPhoneNormalized || recipientPhoneFromEngageData(row.data || {});
     const name = row.recipientName || recipientNameFromEngageData(row.data || {});
     if (!phone) return;
@@ -202,6 +213,7 @@ export class EngageCustomerFollowUpService {
   }
 
   private async sendThankYou(row: EngageEndCustomerDocument): Promise<void> {
+    if (!outreachSendThankYousEnabled(this.configService)) return;
     const phone = row.recipientPhoneNormalized || recipientPhoneFromEngageData(row.data || {});
     const name = row.recipientName || recipientNameFromEngageData(row.data || {});
     if (!phone) return;
